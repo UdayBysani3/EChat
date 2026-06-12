@@ -1,0 +1,75 @@
+# Workspace level ignores
+.agents/
+.vscode/
+skills-lock.json
+tasks/
+
+# Miscellaneous general ignores
+*.class
+*.log
+*.pyc
+*.swp
+.DS_Store
+.atom/
+.build/
+.buildlog/
+.history
+.svn/
+.swiftpm/
+
+# ==========================================
+# FRONTEND (Flutter) Ignores
+# ==========================================
+frontend/.env
+frontend/*.iml
+frontend/*.ipr
+frontend/*.iws
+frontend/.idea/
+frontend/**/doc/api/
+frontend/**/ios/Flutter/.last_build_id
+frontend/.dart_tool/
+frontend/.flutter-plugins-dependencies
+frontend/.pub-cache/
+frontend/.pub/
+frontend/build/
+frontend/coverage/
+frontend/app.*.symbols
+frontend/app.*.map.json
+frontend/android/app/debug
+frontend/android/app/profile
+frontend/android/app/release
+
+# ==========================================
+# BACKEND (Node.js / NestJS) Ignores
+# ==========================================
+backend/dist/
+backend/node_modules/
+backend/build/
+backend/logs/
+backend/*.log
+backend/npm-debug.log*
+backend/pnpm-debug.log*
+backend/yarn-debug.log*
+backend/yarn-error.log*
+backend/lerna-debug.log*
+backend/coverage/
+backend/.nyc_output/
+backend/.idea/
+backend/.project
+backend/.classpath
+backend/.c9/
+backend/*.launch
+backend/.settings/
+backend/*.sublime-workspace
+backend/.env
+backend/.env.development.local
+backend/.env.test.local
+backend/.env.production.local
+backend/.env.local
+backend/.temp/
+backend/.tmp/
+backend/pids/
+backend/*.pid
+backend/*.seed
+backend/*.pid.lock
+backend/report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json

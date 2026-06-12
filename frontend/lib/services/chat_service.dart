@@ -205,7 +205,7 @@ class ChatService {
   Future<List<Map<String, dynamic>>> getMessages(String chatId) async {
     final response = await _client
         .from('messages')
-        .select('id, sender_id, content, message_type, created_at, status')
+        .select()
         .eq('chat_id', chatId)
         .order('created_at', ascending: true);
 
@@ -345,11 +345,89 @@ class ChatService {
 
   // Listen to realtime messages in a specific chat
   Stream<List<Map<String, dynamic>>> streamMessages(String chatId) {
-    return _client
-        .from('messages')
-        .stream(primaryKey: ['id'])
-        .eq('chat_id', chatId)
-        .order('created_at', ascending: true);
+    final controller = StreamController<List<Map<String, dynamic>>>();
+    List<Map<String, dynamic>> currentMessages = [];
+
+    Future<void> fetchAndEmit() async {
+      try {
+        final msgs = await getMessages(chatId);
+        currentMessages = msgs;
+        if (!controller.isClosed) {
+          controller.add(msgs);
+        }
+      } catch (e) {
+        if (!controller.isClosed) {
+          controller.addError(e);
+        }
+      }
+    }
+
+    // Initial fetch
+    fetchAndEmit();
+
+    // Subscribe to all changes on messages table.
+    // RLS policy on the server handles the security (user can only see their own rows).
+    final channelName = 'chat-messages-realtime-$chatId';
+    final channel = _client.channel(channelName)
+        .onPostgresChanges(
+          event: PostgresChangeEvent.all,
+          schema: 'public',
+          table: 'messages',
+          callback: (payload) {
+            final eventType = payload.eventType;
+
+            if (eventType == PostgresChangeEvent.insert) {
+              final newRecord = payload.newRecord;
+              if (newRecord['chat_id'] == chatId) {
+                final exists = currentMessages.any((m) => m['id'] == newRecord['id']);
+                if (!exists) {
+                  currentMessages.add(newRecord);
+                  // Sort to ensure proper chronological order
+                  currentMessages.sort((a, b) {
+                    final aTime = DateTime.tryParse(a['created_at']?.toString() ?? '') ?? DateTime.fromMillisecondsSinceEpoch(0);
+                    final bTime = DateTime.tryParse(b['created_at']?.toString() ?? '') ?? DateTime.fromMillisecondsSinceEpoch(0);
+                    return aTime.compareTo(bTime);
+                  });
+                  if (!controller.isClosed) {
+                    controller.add(List<Map<String, dynamic>>.from(currentMessages));
+                  }
+                }
+              }
+            } else if (eventType == PostgresChangeEvent.update) {
+              final newRecord = payload.newRecord;
+              if (newRecord['chat_id'] == chatId) {
+                final index = currentMessages.indexWhere((m) => m['id'] == newRecord['id']);
+                if (index != -1) {
+                  currentMessages[index] = newRecord;
+                  if (!controller.isClosed) {
+                    controller.add(List<Map<String, dynamic>>.from(currentMessages));
+                  }
+                }
+              }
+            } else if (eventType == PostgresChangeEvent.delete) {
+              final oldRecord = payload.oldRecord;
+              final deletedId = oldRecord['id'] as String?;
+              if (deletedId != null) {
+                final index = currentMessages.indexWhere((m) => m['id'] == deletedId);
+                if (index != -1) {
+                  currentMessages.removeAt(index);
+                  if (!controller.isClosed) {
+                    controller.add(List<Map<String, dynamic>>.from(currentMessages));
+                  }
+                }
+              }
+            }
+          },
+        );
+
+    channel.subscribe();
+
+    controller.onCancel = () {
+      _client.removeChannel(channel);
+      controller.close();
+    };
+
+    return controller.stream;
   }
 
   // Listen to changes in received chat requests in real-time

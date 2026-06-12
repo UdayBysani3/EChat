@@ -1,0 +1,43 @@
+name: echat
+description: "A new Flutter project."
+publish_to: 'none'
+version: 0.1.0+1
+
+environment:
+  sdk: ^3.11.5
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_riverpod: ^2.5.1
+  go_router: ^14.2.0
+  supabase_flutter: ^2.6.0
+  flutter_animate: ^4.5.0
+  google_fonts: ^6.2.0
+  image_picker: ^1.1.2
+  file_picker: ^10.3.8
+  record: ^5.1.2
+  audioplayers: ^6.0.0
+  path_provider: ^2.1.3
+  cached_network_image: ^3.4.1
+  url_launcher: ^6.3.0
+  geolocator: ^13.0.1
+  http: ^1.2.1
+  flutter_dotenv: ^5.1.0
+  zego_uikit_prebuilt_call: ^4.24.2
+  flutter_map: ^8.0.0
+  latlong2: ^0.9.1
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true
+  assets:
+    - .env
+    - assets/images/
+
+dependency_overrides:
+  record_platform_interface: 1.1.0
