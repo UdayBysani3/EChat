@@ -1,25 +1,39 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:echat/services/chat_service.dart';
 
 // Riverpod theme provider
 final themeModeProvider = StateNotifierProvider<ThemeModeNotifier, ThemeMode>((ref) {
-  return ThemeModeNotifier();
+  final prefs = ref.watch(sharedPreferencesProvider);
+  return ThemeModeNotifier(prefs);
 });
 
 class ThemeModeNotifier extends StateNotifier<ThemeMode> {
-  ThemeModeNotifier() : super(ThemeMode.dark) {
-    // Sync initial color scheme state
-    ObsidianMintColors.setDark(true);
+  final SharedPreferences _prefs;
+
+  ThemeModeNotifier(this._prefs) : super(ThemeMode.dark) {
+    // Read theme mode from prefs, defaulting to ThemeMode.dark
+    final themeString = _prefs.getString('theme_mode');
+    if (themeString == 'light') {
+      state = ThemeMode.light;
+      ObsidianMintColors.setDark(false);
+    } else {
+      state = ThemeMode.dark;
+      ObsidianMintColors.setDark(true);
+    }
   }
 
   void toggleTheme() {
     if (state == ThemeMode.dark) {
       state = ThemeMode.light;
       ObsidianMintColors.setDark(false);
+      _prefs.setString('theme_mode', 'light');
     } else {
       state = ThemeMode.dark;
       ObsidianMintColors.setDark(true);
+      _prefs.setString('theme_mode', 'dark');
     }
   }
 }
@@ -37,12 +51,12 @@ class ObsidianMintColors {
   static Color get surface => _isDark ? const Color(0xFF1D2022) : const Color(0xFFFFFFFF);
   static Color get surfaceElevated => _isDark ? const Color(0xFF272A2C) : const Color(0xFFECEFF1);
   static Color get surfaceContainerLow => _isDark ? const Color(0xFF191C1E) : const Color(0xFFECEFF1);
-  static Color get surfaceContainerLowest => _isDark ? const Color(0xFF0C0F11) : const Color(0xFFDFE4E8);
+  static Color get surfaceContainerLowest => _isDark ? const Color(0xFF0C0F11) : const Color(0xFFFFFFFF);
   
   static Color get primary => _isDark ? const Color(0xFF53DE9E) : const Color(0xFF00A36C); // Emerald Accent
   static Color get onPrimary => _isDark ? const Color(0xFF003822) : const Color(0xFFFFFFFF);
   static Color get primaryContainer => _isDark ? const Color(0xFF00B074) : const Color(0xFFD0F8E6);
-  static Color get onPrimaryContainer => _isDark ? const Color(0xFF003A23) : const Color(0xFF003822);
+  static Color get onPrimaryContainer => _isDark ? const Color(0xFF003A23) : const Color(0xFF000000);
   
   static Color get secondary => _isDark ? const Color(0xFFC2C7CC) : const Color(0xFF656F77);
   static Color get onSecondary => _isDark ? const Color(0xFF2C3135) : const Color(0xFFFFFFFF);

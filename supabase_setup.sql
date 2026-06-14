@@ -56,6 +56,7 @@ CREATE TABLE IF NOT EXISTS public.messages (
     message_type TEXT DEFAULT 'text' CHECK (message_type IN ('text', 'image', 'audio', 'file', 'location')),
     status TEXT DEFAULT 'sent' CHECK (status IN ('sent', 'read')),
     reactions JSONB DEFAULT '{}'::jsonb NOT NULL,
+    reply_to_id UUID REFERENCES public.messages(id) ON DELETE SET NULL,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
 );
 

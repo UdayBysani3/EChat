@@ -27,7 +27,9 @@ class ChatService {
   Future<void> sendChatRequest(String receiverId) async {
     final senderId = currentUserId;
     if (senderId == null) throw Exception('User not authenticated');
-    if (senderId == receiverId) throw Exception('Cannot send a request to yourself');
+    if (senderId == receiverId) {
+      throw Exception('Cannot send a request to yourself');
+    }
 
     // Check if blocked interaction is active
     if (await isBlocked(receiverId)) {
@@ -39,7 +41,7 @@ class ChatService {
         .from('chat_members')
         .select('chat_id')
         .eq('user_id', senderId);
-    
+
     if (myChats.isNotEmpty) {
       final myChatIds = myChats.map((m) => m['chat_id'] as String).toList();
       final commonChat = await _client
@@ -47,7 +49,7 @@ class ChatService {
           .select()
           .inFilter('chat_id', myChatIds)
           .eq('user_id', receiverId);
-      
+
       if (commonChat.isNotEmpty) {
         throw Exception('You are already friends with this user.');
       }
@@ -57,7 +59,9 @@ class ChatService {
     final existingRequest = await _client
         .from('chat_requests')
         .select()
-        .or('and(sender_id.eq.$senderId,receiver_id.eq.$receiverId),and(sender_id.eq.$receiverId,receiver_id.eq.$senderId)')
+        .or(
+          'and(sender_id.eq.$senderId,receiver_id.eq.$receiverId),and(sender_id.eq.$receiverId,receiver_id.eq.$senderId)',
+        )
         .maybeSingle();
 
     if (existingRequest != null) {
@@ -153,7 +157,9 @@ class ChatService {
     try {
       final response = await _client
           .from('chat_requests')
-          .select('*, receiver:users!receiver_id(id, email, username, profile_image)')
+          .select(
+            '*, receiver:users!receiver_id(id, email, username, profile_image)',
+          )
           .eq('sender_id', userId)
           .eq('status', 'declined')
           .eq('sender_notified_on_decline', false);
@@ -168,9 +174,10 @@ class ChatService {
   // Mark a declined request as notified to the sender using security definer RPC
   Future<void> markDeclineNotified(String requestId) async {
     try {
-      await _client.rpc('mark_decline_notified', params: {
-        'request_id': requestId,
-      });
+      await _client.rpc(
+        'mark_decline_notified',
+        params: {'request_id': requestId},
+      );
     } catch (e) {
       debugPrint('[ChatService] Error marking decline notified: $e');
     }
@@ -182,32 +189,42 @@ class ChatService {
     if (userId == null) return [];
 
     try {
-      final response = await _client.rpc('get_user_chats', params: {
-        'user_uuid': userId,
-      });
+      final response = await _client.rpc(
+        'get_user_chats',
+        params: {'user_uuid': userId},
+      );
 
       final list = List<Map<String, dynamic>>.from(response);
-      return list.map((item) {
-        final lastMsgText = _formatLastMessagePreview(
-          item['last_message_content'] as String?,
-          item['last_message_type'] as String?,
-        );
-        return {
-          'chat_id': item['chat_id'],
-          'recipient': {
-            'id': item['recipient_id'],
-            'email': item['recipient_email'],
-            'username': item['recipient_username'],
-            'profile_image': item['recipient_profile_image'],
-            'status': item['recipient_status'],
-          },
-          'last_message': lastMsgText,
-          'last_message_time': item['last_message_time'],
-          'last_message_sender_id': item['last_message_sender_id'],
-        };
-      }).toList();
+      final uniqueChats = <String, Map<String, dynamic>>{};
+      for (final item in list) {
+        final recipientId = item['recipient_id'] as String?;
+        if (recipientId != null) {
+          if (!uniqueChats.containsKey(recipientId)) {
+            final lastMsgText = _formatLastMessagePreview(
+              item['last_message_content'] as String?,
+              item['last_message_type'] as String?,
+            );
+            uniqueChats[recipientId] = {
+              'chat_id': item['chat_id'],
+              'recipient': {
+                'id': recipientId,
+                'email': item['recipient_email'],
+                'username': item['recipient_username'],
+                'profile_image': item['recipient_profile_image'],
+                'status': item['recipient_status'],
+              },
+              'last_message': lastMsgText,
+              'last_message_time': item['last_message_time'],
+              'last_message_sender_id': item['last_message_sender_id'],
+            };
+          }
+        }
+      }
+      return uniqueChats.values.toList();
     } catch (e) {
-      debugPrint('[ChatService] Error calling get_user_chats RPC: $e. Falling back...');
+      debugPrint(
+        '[ChatService] Error calling get_user_chats RPC: $e. Falling back...',
+      );
       return _getChatsListFallback();
     }
   }
@@ -245,7 +262,9 @@ class ChatService {
     // Step 2: Fetch all members of those chats, excluding ourselves
     final chatMembers = await _client
         .from('chat_members')
-        .select('chat_id, user:users(id, email, username, profile_image, status)')
+        .select(
+          'chat_id, user:users(id, email, username, profile_image, status)',
+        )
         .inFilter('chat_id', chatIds)
         .neq('user_id', userId);
 
@@ -301,7 +320,18 @@ class ChatService {
       return bTime.compareTo(aTime);
     });
 
-    return results;
+    final uniqueResults = <String, Map<String, dynamic>>{};
+    for (var chat in results) {
+      final recipientId =
+          (chat['recipient'] as Map<String, dynamic>?)?['id'] as String?;
+      if (recipientId != null) {
+        if (!uniqueResults.containsKey(recipientId)) {
+          uniqueResults[recipientId] = chat;
+        }
+      }
+    }
+
+    return uniqueResults.values.toList();
   }
 
   // Fetch messages history
@@ -316,7 +346,11 @@ class ChatService {
   }
 
   // Send a text message (verifies block status first)
-  Future<void> sendTextMessage(String chatId, String content) async {
+  Future<void> sendTextMessage(
+    String chatId,
+    String content, {
+    String? replyToId,
+  }) async {
     final userId = currentUserId;
     if (userId == null) throw Exception('User not authenticated');
 
@@ -326,7 +360,7 @@ class ChatService {
         .select('user_id')
         .eq('chat_id', chatId)
         .neq('user_id', userId);
-    
+
     String? recipientId;
     if (members.isNotEmpty) {
       recipientId = members.first['user_id'] as String;
@@ -342,6 +376,7 @@ class ChatService {
       'content': content.trim(),
       'message_type': 'text',
       'status': 'sent',
+      'reply_to_id': replyToId,
     });
   }
 
@@ -352,50 +387,67 @@ class ChatService {
       throw Exception('File does not exist: $localPath');
     }
 
-    final sanitizedFileName = fileName.replaceAll(RegExp(r'[^a-zA-Z0-9_.-]'), '_');
-    final uniqueName = '${DateTime.now().millisecondsSinceEpoch}_$sanitizedFileName';
+    final sanitizedFileName = fileName.replaceAll(
+      RegExp(r'[^a-zA-Z0-9_.-]'),
+      '_',
+    );
+    final uniqueName =
+        '${DateTime.now().millisecondsSinceEpoch}_$sanitizedFileName';
     final path = 'chat_attachments/$uniqueName';
-    
+
     // Resolve MIME type dynamically
     final mimeType = lookupMimeType(fileName) ?? 'application/octet-stream';
 
-    await _client.storage.from('media').upload(
-      path,
-      file,
-      fileOptions: FileOptions(
-        cacheControl: '3600',
-        contentType: mimeType,
-        upsert: false,
-      ),
-    );
+    await _client.storage
+        .from('media')
+        .upload(
+          path,
+          file,
+          fileOptions: FileOptions(
+            cacheControl: '3600',
+            contentType: mimeType,
+            upsert: false,
+          ),
+        );
 
     return _client.storage.from('media').getPublicUrl(path);
   }
 
   // Upload bytes to Supabase storage bucket 'media'
   Future<String> uploadBytes(Uint8List bytes, String fileName) async {
-    final sanitizedFileName = fileName.replaceAll(RegExp(r'[^a-zA-Z0-9_.-]'), '_');
-    final uniqueName = '${DateTime.now().millisecondsSinceEpoch}_$sanitizedFileName';
+    final sanitizedFileName = fileName.replaceAll(
+      RegExp(r'[^a-zA-Z0-9_.-]'),
+      '_',
+    );
+    final uniqueName =
+        '${DateTime.now().millisecondsSinceEpoch}_$sanitizedFileName';
     final path = 'chat_attachments/$uniqueName';
-    
+
     // Resolve MIME type dynamically
     final mimeType = lookupMimeType(fileName) ?? 'application/octet-stream';
 
-    await _client.storage.from('media').uploadBinary(
-      path,
-      bytes,
-      fileOptions: FileOptions(
-        cacheControl: '3600',
-        contentType: mimeType,
-        upsert: false,
-      ),
-    );
+    await _client.storage
+        .from('media')
+        .uploadBinary(
+          path,
+          bytes,
+          fileOptions: FileOptions(
+            cacheControl: '3600',
+            contentType: mimeType,
+            upsert: false,
+          ),
+        );
 
     return _client.storage.from('media').getPublicUrl(path);
   }
 
   // Send a media message (image, audio, file)
-  Future<void> sendMediaMessage(String chatId, String fileUrl, String messageType) async {
+  Future<void> sendMediaMessage(
+    String chatId,
+    String fileUrl,
+    String messageType, {
+    String? replyToId,
+  }) async {
     final userId = currentUserId;
     if (userId == null) throw Exception('User not authenticated');
 
@@ -405,7 +457,7 @@ class ChatService {
         .select('user_id')
         .eq('chat_id', chatId)
         .neq('user_id', userId);
-    
+
     String? recipientId;
     if (members.isNotEmpty) {
       recipientId = members.first['user_id'] as String;
@@ -421,11 +473,17 @@ class ChatService {
       'content': fileUrl,
       'message_type': messageType,
       'status': 'sent',
+      'reply_to_id': replyToId,
     });
   }
 
   // Send location message
-  Future<void> sendLocationMessage(String chatId, double latitude, double longitude) async {
+  Future<void> sendLocationMessage(
+    String chatId,
+    double latitude,
+    double longitude, {
+    String? replyToId,
+  }) async {
     final userId = currentUserId;
     if (userId == null) throw Exception('User not authenticated');
 
@@ -435,7 +493,7 @@ class ChatService {
         .select('user_id')
         .eq('chat_id', chatId)
         .neq('user_id', userId);
-    
+
     String? recipientId;
     if (members.isNotEmpty) {
       recipientId = members.first['user_id'] as String;
@@ -451,6 +509,7 @@ class ChatService {
       'content': '$latitude,$longitude',
       'message_type': 'location',
       'status': 'sent',
+      'reply_to_id': replyToId,
     });
   }
 
@@ -573,10 +632,7 @@ class ChatService {
     final userId = currentUserId;
     if (userId == null) return;
 
-    await _client
-        .from('users')
-        .update({'status': status})
-        .eq('id', userId);
+    await _client.from('users').update({'status': status}).eq('id', userId);
   }
 
   // UPDATE USER SESSION ID (For single-device login enforcement)
@@ -632,7 +688,9 @@ class ChatService {
     final response = await _client
         .from('blocked_users')
         .select()
-        .or('and(blocker_id.eq.$userId,blocked_id.eq.$targetId),and(blocker_id.eq.$targetId,blocked_id.eq.$userId)')
+        .or(
+          'and(blocker_id.eq.$userId,blocked_id.eq.$targetId),and(blocker_id.eq.$targetId,blocked_id.eq.$userId)',
+        )
         .maybeSingle();
 
     return response != null;
@@ -644,14 +702,20 @@ class ChatService {
 
     final response = await _client
         .from('blocked_users')
-        .select('*, blocked:users!blocked_id(id, email, username, profile_image)')
+        .select(
+          '*, blocked:users!blocked_id(id, email, username, profile_image)',
+        )
         .eq('blocker_id', userId);
 
     return List<Map<String, dynamic>>.from(response);
   }
 
   // React to a message (toggle emoji reaction)
-  Future<void> reactToMessage(String messageId, String emoji, Map<String, dynamic> currentReactions) async {
+  Future<void> reactToMessage(
+    String messageId,
+    String emoji,
+    Map<String, dynamic> currentReactions,
+  ) async {
     final userId = currentUserId;
     if (userId == null) throw Exception('User not authenticated');
 
@@ -694,7 +758,11 @@ class ChatService {
   }
 
   // Update current user username, bio, and optionally profile image
-  Future<void> updateProfile({required String username, required String bio, String? profileImage}) async {
+  Future<void> updateProfile({
+    required String username,
+    required String bio,
+    String? profileImage,
+  }) async {
     final userId = currentUserId;
     if (userId == null) throw Exception('User not authenticated');
 
@@ -707,10 +775,7 @@ class ChatService {
       updates['profile_image'] = profileImage;
     }
 
-    await _client
-        .from('users')
-        .update(updates)
-        .eq('id', userId);
+    await _client.from('users').update(updates).eq('id', userId);
   }
 
   // ─────────────────────────────────────────────────────────────
@@ -726,23 +791,24 @@ class ChatService {
     final callerId = currentUserId;
     if (callerId == null) throw Exception('User not authenticated');
 
-    final response = await _client.from('call_logs').insert({
-      'caller_id': callerId,
-      'receiver_id': receiverId,
-      'chat_id': chatId,
-      'is_video': isVideo,
-      'status': 'initiated',
-    }).select('id').single();
+    final response = await _client
+        .from('call_logs')
+        .insert({
+          'caller_id': callerId,
+          'receiver_id': receiverId,
+          'chat_id': chatId,
+          'is_video': isVideo,
+          'status': 'initiated',
+        })
+        .select('id')
+        .single();
 
     return response['id'] as String;
   }
 
   // Update call log status
   Future<void> updateCallStatus(String callId, String status) async {
-    await _client
-        .from('call_logs')
-        .update({'status': status})
-        .eq('id', callId);
+    await _client.from('call_logs').update({'status': status}).eq('id', callId);
   }
 
   // Fetch all call logs for current user (caller or receiver)
@@ -752,7 +818,9 @@ class ChatService {
 
     final response = await _client
         .from('call_logs')
-        .select('*, caller:users!caller_id(id, email, username, profile_image), receiver:users!receiver_id(id, email, username, profile_image)')
+        .select(
+          '*, caller:users!caller_id(id, email, username, profile_image), receiver:users!receiver_id(id, email, username, profile_image)',
+        )
         .or('caller_id.eq.$userId,receiver_id.eq.$userId')
         .order('created_at', ascending: false);
 
@@ -778,15 +846,21 @@ class ChatService {
 
     Future<void> fetchActive() async {
       try {
-        debugPrint('[CallingSystem] fetchActive: Checking calls for receiver: $userId');
+        debugPrint(
+          '[CallingSystem] fetchActive: Checking calls for receiver: $userId',
+        );
         final res = await _client
             .from('call_logs')
-            .select('*, caller:users!caller_id(id, email, username, profile_image)')
+            .select(
+              '*, caller:users!caller_id(id, email, username, profile_image)',
+            )
             .eq('receiver_id', userId)
             .inFilter('status', ['initiated', 'ringing'])
             .order('created_at', ascending: false);
-        
-        debugPrint('[CallingSystem] fetchActive: Found ${res.length} active incoming calls');
+
+        debugPrint(
+          '[CallingSystem] fetchActive: Found ${res.length} active incoming calls',
+        );
         if (!controller.isClosed) {
           controller.add(List<Map<String, dynamic>>.from(res));
         }
@@ -802,24 +876,33 @@ class ChatService {
     fetchActive();
 
     final channelName = 'call-logs-realtime-$userId';
-    debugPrint('[CallingSystem] streamIncomingCalls: Subscribing to realtime channel: $channelName');
-    final channel = _client.channel(channelName)
+    debugPrint(
+      '[CallingSystem] streamIncomingCalls: Subscribing to realtime channel: $channelName',
+    );
+    final channel = _client
+        .channel(channelName)
         .onPostgresChanges(
           event: PostgresChangeEvent.all,
           schema: 'public',
           table: 'call_logs',
           callback: (payload) {
-            debugPrint('[CallingSystem] streamIncomingCalls: Received PostgresChangeEvent event=${payload.eventType} table=${payload.table}');
+            debugPrint(
+              '[CallingSystem] streamIncomingCalls: Received PostgresChangeEvent event=${payload.eventType} table=${payload.table}',
+            );
             fetchActive();
           },
         );
 
     channel.subscribe((status, [error]) {
-      debugPrint('[CallingSystem] streamIncomingCalls: Realtime channel subscription status: $status, error: $error');
+      debugPrint(
+        '[CallingSystem] streamIncomingCalls: Realtime channel subscription status: $status, error: $error',
+      );
     });
 
     controller.onCancel = () {
-      debugPrint('[CallingSystem] streamIncomingCalls: Cancelling stream subscription for $channelName');
+      debugPrint(
+        '[CallingSystem] streamIncomingCalls: Cancelling stream subscription for $channelName',
+      );
       _client.removeChannel(channel);
       controller.close();
     };
@@ -885,49 +968,49 @@ final chatsListProvider = StreamProvider<List<Map<String, dynamic>>>((ref) {
   fetchAndEmit();
 
   // Subscribe to Realtime Postgres Changes on multiple tables
-  final channel = client.channel('home-chats-realtime')
+  final channel = client
+      .channel('home-chats-realtime-$userId')
+      // When a new member row appears (chat accepted), refresh
+      .onPostgresChanges(
+        event: PostgresChangeEvent.insert,
+        schema: 'public',
+        table: 'chat_members',
+        callback: (_) => fetchAndEmit(),
+      )
+      // When any new message arrives in any chat, refresh (updates last message)
+      .onPostgresChanges(
+        event: PostgresChangeEvent.insert,
+        schema: 'public',
+        table: 'messages',
+        callback: (_) => fetchAndEmit(),
+      )
+      // When message status changes (read receipts), refresh
+      .onPostgresChanges(
+        event: PostgresChangeEvent.update,
+        schema: 'public',
+        table: 'messages',
+        callback: (_) => fetchAndEmit(),
+      )
+      // When message is deleted, refresh
+      .onPostgresChanges(
+        event: PostgresChangeEvent.delete,
+        schema: 'public',
+        table: 'messages',
+        callback: (_) => fetchAndEmit(),
+      )
+      // When user status changes (online/offline), refresh
+      .onPostgresChanges(
+        event: PostgresChangeEvent.update,
+        schema: 'public',
+        table: 'users',
+        callback: (_) => fetchAndEmit(),
+      );
 
-    // When a new member row appears (chat accepted), refresh
-    .onPostgresChanges(
-      event: PostgresChangeEvent.insert,
-      schema: 'public',
-      table: 'chat_members',
-      callback: (_) => fetchAndEmit(),
-    )
-
-    // When any new message arrives in any chat, refresh (updates last message)
-    .onPostgresChanges(
-      event: PostgresChangeEvent.insert,
-      schema: 'public',
-      table: 'messages',
-      callback: (_) => fetchAndEmit(),
-    )
-
-    // When message status changes (read receipts), refresh
-    .onPostgresChanges(
-      event: PostgresChangeEvent.update,
-      schema: 'public',
-      table: 'messages',
-      callback: (_) => fetchAndEmit(),
-    )
-
-    // When message is deleted, refresh
-    .onPostgresChanges(
-      event: PostgresChangeEvent.delete,
-      schema: 'public',
-      table: 'messages',
-      callback: (_) => fetchAndEmit(),
-    )
-
-    // When user status changes (online/offline), refresh
-    .onPostgresChanges(
-      event: PostgresChangeEvent.update,
-      schema: 'public',
-      table: 'users',
-      callback: (_) => fetchAndEmit(),
+  channel.subscribe((status, [error]) {
+    debugPrint(
+      '[ChatService] chatsListProvider subscription status: $status, error: $error',
     );
-
-  channel.subscribe();
+  });
 
   // Cleanup channel + controller on provider dispose
   ref.onDispose(() {
@@ -943,7 +1026,9 @@ final chatsListProvider = StreamProvider<List<Map<String, dynamic>>>((ref) {
 // Listens on chat_requests table for INSERT/UPDATE/DELETE
 // targeting the current user as receiver.
 // ─────────────────────────────────────────────────────────────
-final pendingRequestsProvider = StreamProvider<List<Map<String, dynamic>>>((ref) {
+final pendingRequestsProvider = StreamProvider<List<Map<String, dynamic>>>((
+  ref,
+) {
   // Watch sessionProvider to ensure the stream is recreated when auth state changes
   final session = ref.watch(sessionProvider);
   final userId = session?.user.id;
@@ -972,33 +1057,35 @@ final pendingRequestsProvider = StreamProvider<List<Map<String, dynamic>>>((ref)
   fetchAndEmit();
 
   // Subscribe to Realtime Postgres Changes on chat_requests
-  final channel = client.channel('home-requests-realtime')
+  final channel = client
+      .channel('home-requests-realtime-$userId')
+      // New request received
+      .onPostgresChanges(
+        event: PostgresChangeEvent.insert,
+        schema: 'public',
+        table: 'chat_requests',
+        callback: (_) => fetchAndEmit(),
+      )
+      // Request status changed (accepted/declined)
+      .onPostgresChanges(
+        event: PostgresChangeEvent.update,
+        schema: 'public',
+        table: 'chat_requests',
+        callback: (_) => fetchAndEmit(),
+      )
+      // Request deleted
+      .onPostgresChanges(
+        event: PostgresChangeEvent.delete,
+        schema: 'public',
+        table: 'chat_requests',
+        callback: (_) => fetchAndEmit(),
+      );
 
-    // New request received
-    .onPostgresChanges(
-      event: PostgresChangeEvent.insert,
-      schema: 'public',
-      table: 'chat_requests',
-      callback: (_) => fetchAndEmit(),
-    )
-
-    // Request status changed (accepted/declined)
-    .onPostgresChanges(
-      event: PostgresChangeEvent.update,
-      schema: 'public',
-      table: 'chat_requests',
-      callback: (_) => fetchAndEmit(),
-    )
-
-    // Request deleted
-    .onPostgresChanges(
-      event: PostgresChangeEvent.delete,
-      schema: 'public',
-      table: 'chat_requests',
-      callback: (_) => fetchAndEmit(),
+  channel.subscribe((status, [error]) {
+    debugPrint(
+      '[ChatService] pendingRequestsProvider subscription status: $status, error: $error',
     );
-
-  channel.subscribe();
+  });
 
   ref.onDispose(() {
     client.removeChannel(channel);
@@ -1013,10 +1100,11 @@ final pendingRequestsProvider = StreamProvider<List<Map<String, dynamic>>>((ref)
 // Uses Supabase's built-in .stream() which creates a
 // Realtime subscription and syncs full state automatically.
 // ─────────────────────────────────────────────────────────────
-final chatMessagesStreamProvider = StreamProvider.family<List<Map<String, dynamic>>, String>((ref, chatId) {
-  final chatService = ref.watch(chatServiceProvider);
-  return chatService.streamMessages(chatId);
-});
+final chatMessagesStreamProvider =
+    StreamProvider.family<List<Map<String, dynamic>>, String>((ref, chatId) {
+      final chatService = ref.watch(chatServiceProvider);
+      return chatService.streamMessages(chatId);
+    });
 
 // ─────────────────────────────────────────────────────────────
 // REACTIVE: Real-time user status (online/offline)
@@ -1077,53 +1165,54 @@ final userStatusProvider = StreamProvider.family<String, String>((ref, userId) {
 // REACTIVE: Other user profile details stream
 // Streams changes to a specific user's profile from the users table.
 // ─────────────────────────────────────────────────────────────
-final otherUserProfileProvider = StreamProvider.family<Map<String, dynamic>?, String>((ref, userId) {
-  final client = Supabase.instance.client;
-  final controller = StreamController<Map<String, dynamic>?>();
+final otherUserProfileProvider =
+    StreamProvider.family<Map<String, dynamic>?, String>((ref, userId) {
+      final client = Supabase.instance.client;
+      final controller = StreamController<Map<String, dynamic>?>();
 
-  Future<void> fetchProfile() async {
-    try {
-      final res = await client
-          .from('users')
-          .select('id, email, username, profile_image, bio, status')
-          .eq('id', userId)
-          .maybeSingle();
-      if (!controller.isClosed) {
-        controller.add(res);
-      }
-    } catch (_) {
-      if (!controller.isClosed) {
-        controller.add(null);
-      }
-    }
-  }
-
-  fetchProfile();
-
-  final channel = client
-      .channel('other-user-profile-$userId')
-      .onPostgresChanges(
-        event: PostgresChangeEvent.update,
-        schema: 'public',
-        table: 'users',
-        callback: (payload) {
-          final newRecord = payload.newRecord;
-          if (newRecord['id'] == userId) {
-            if (!controller.isClosed) {
-              controller.add(newRecord);
-            }
+      Future<void> fetchProfile() async {
+        try {
+          final res = await client
+              .from('users')
+              .select('id, email, username, profile_image, bio, status')
+              .eq('id', userId)
+              .maybeSingle();
+          if (!controller.isClosed) {
+            controller.add(res);
           }
-        },
-      )
-      .subscribe();
+        } catch (_) {
+          if (!controller.isClosed) {
+            controller.add(null);
+          }
+        }
+      }
 
-  ref.onDispose(() {
-    client.removeChannel(channel);
-    controller.close();
-  });
+      fetchProfile();
 
-  return controller.stream;
-});
+      final channel = client
+          .channel('other-user-profile-$userId')
+          .onPostgresChanges(
+            event: PostgresChangeEvent.update,
+            schema: 'public',
+            table: 'users',
+            callback: (payload) {
+              final newRecord = payload.newRecord;
+              if (newRecord['id'] == userId) {
+                if (!controller.isClosed) {
+                  controller.add(newRecord);
+                }
+              }
+            },
+          )
+          .subscribe();
+
+      ref.onDispose(() {
+        client.removeChannel(channel);
+        controller.close();
+      });
+
+      return controller.stream;
+    });
 
 // ─────────────────────────────────────────────────────────────
 // REACTIVE: Current user profile details stream
@@ -1143,7 +1232,9 @@ final currentUserProfileProvider = StreamProvider<Map<String, dynamic>?>((ref) {
     try {
       final res = await client
           .from('users')
-          .select('id, email, username, profile_image, bio, status, current_session_id')
+          .select(
+            'id, email, username, profile_image, bio, status, current_session_id',
+          )
           .eq('id', userId)
           .maybeSingle();
       if (!controller.isClosed) {
@@ -1159,7 +1250,7 @@ final currentUserProfileProvider = StreamProvider<Map<String, dynamic>?>((ref) {
   fetchProfile();
 
   final channel = client
-      .channel('my-profile')
+      .channel('my-profile-$userId')
       .onPostgresChanges(
         event: PostgresChangeEvent.update,
         schema: 'public',
@@ -1172,8 +1263,9 @@ final currentUserProfileProvider = StreamProvider<Map<String, dynamic>?>((ref) {
             }
           }
         },
-      )
-      .subscribe();
+      );
+
+  channel.subscribe();
 
   ref.onDispose(() {
     client.removeChannel(channel);
@@ -1212,7 +1304,8 @@ final callHistoryProvider = StreamProvider<List<Map<String, dynamic>>>((ref) {
 
   fetchAndEmit();
 
-  final channel = client.channel('call-logs-realtime')
+  final channel = client
+      .channel('call-logs-realtime-$userId')
       .onPostgresChanges(
         event: PostgresChangeEvent.insert,
         schema: 'public',
@@ -1240,7 +1333,9 @@ final callHistoryProvider = StreamProvider<List<Map<String, dynamic>>>((ref) {
 // REACTIVE: Incoming calls stream
 // Listens for calls where status = 'initiated' and receiver = current user.
 // ─────────────────────────────────────────────────────────────
-final incomingCallsStreamProvider = StreamProvider<Map<String, dynamic>?>((ref) {
+final incomingCallsStreamProvider = StreamProvider<Map<String, dynamic>?>((
+  ref,
+) {
   final session = ref.watch(sessionProvider);
   final userId = session?.user.id;
 
@@ -1253,7 +1348,9 @@ final incomingCallsStreamProvider = StreamProvider<Map<String, dynamic>?>((ref) 
     try {
       final res = await client
           .from('call_logs')
-          .select('*, caller:users!caller_id(id, email, username, profile_image)')
+          .select(
+            '*, caller:users!caller_id(id, email, username, profile_image)',
+          )
           .eq('receiver_id', userId)
           .eq('status', 'initiated')
           .order('created_at', ascending: false)
@@ -1268,7 +1365,8 @@ final incomingCallsStreamProvider = StreamProvider<Map<String, dynamic>?>((ref) 
 
   checkIncoming();
 
-  final channel = client.channel('incoming-calls-realtime')
+  final channel = client
+      .channel('incoming-calls-realtime-$userId')
       .onPostgresChanges(
         event: PostgresChangeEvent.insert,
         schema: 'public',
@@ -1325,14 +1423,16 @@ final globalMessagesProvider = StreamProvider<Map<String, dynamic>>((ref) {
   final controller = StreamController<Map<String, dynamic>>();
 
   final channelName = 'global-messages-realtime-$userId';
-  final channel = client.channel(channelName)
+  final channel = client
+      .channel(channelName)
       .onPostgresChanges(
         event: PostgresChangeEvent.insert,
         schema: 'public',
         table: 'messages',
         callback: (payload) {
           final newRecord = payload.newRecord;
-          if (newRecord['sender_id'] != userId && newRecord['receiver_id'] == userId) {
+          if (newRecord['sender_id'] != userId &&
+              newRecord['receiver_id'] == userId) {
             if (!controller.isClosed) {
               controller.add(newRecord);
             }
@@ -1355,7 +1455,9 @@ final globalMessagesProvider = StreamProvider<Map<String, dynamic>>((ref) {
 // Synchronously overridden in ProviderScope at main() launch.
 // ─────────────────────────────────────────────────────────────
 final sharedPreferencesProvider = Provider<SharedPreferences>((ref) {
-  throw UnimplementedError('SharedPreferences must be overridden in ProviderScope');
+  throw UnimplementedError(
+    'SharedPreferences must be overridden in ProviderScope',
+  );
 });
 
 // ─────────────────────────────────────────────────────────────
@@ -1371,7 +1473,8 @@ final localSessionTokenProvider = Provider<String>((ref) {
     bytes[6] = (bytes[6] & 0x0f) | 0x40;
     bytes[8] = (bytes[8] & 0x3f) | 0x80;
     final hex = bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
-    token = '${hex.substring(0, 8)}-${hex.substring(8, 12)}-'
+    token =
+        '${hex.substring(0, 8)}-${hex.substring(8, 12)}-'
         '${hex.substring(12, 16)}-${hex.substring(16, 20)}-'
         '${hex.substring(20, 32)}';
     prefs.setString('local_session_token', token);
@@ -1383,7 +1486,9 @@ final localSessionTokenProvider = Provider<String>((ref) {
 // REACTIVE: Declined chat requests stream
 // Listens to status transitions to 'declined' targeting the current user as sender.
 // ─────────────────────────────────────────────────────────────
-final declinedRequestsProvider = StreamProvider<List<Map<String, dynamic>>>((ref) {
+final declinedRequestsProvider = StreamProvider<List<Map<String, dynamic>>>((
+  ref,
+) {
   final session = ref.watch(sessionProvider);
   final userId = session?.user.id;
 
@@ -1409,25 +1514,26 @@ final declinedRequestsProvider = StreamProvider<List<Map<String, dynamic>>>((ref
 
   fetchAndEmit();
 
-  final channel = client.channel('declined-requests-realtime')
-    .onPostgresChanges(
-      event: PostgresChangeEvent.insert,
-      schema: 'public',
-      table: 'chat_requests',
-      callback: (_) => fetchAndEmit(),
-    )
-    .onPostgresChanges(
-      event: PostgresChangeEvent.update,
-      schema: 'public',
-      table: 'chat_requests',
-      callback: (_) => fetchAndEmit(),
-    )
-    .onPostgresChanges(
-      event: PostgresChangeEvent.delete,
-      schema: 'public',
-      table: 'chat_requests',
-      callback: (_) => fetchAndEmit(),
-    );
+  final channel = client
+      .channel('declined-requests-realtime-$userId')
+      .onPostgresChanges(
+        event: PostgresChangeEvent.insert,
+        schema: 'public',
+        table: 'chat_requests',
+        callback: (_) => fetchAndEmit(),
+      )
+      .onPostgresChanges(
+        event: PostgresChangeEvent.update,
+        schema: 'public',
+        table: 'chat_requests',
+        callback: (_) => fetchAndEmit(),
+      )
+      .onPostgresChanges(
+        event: PostgresChangeEvent.delete,
+        schema: 'public',
+        table: 'chat_requests',
+        callback: (_) => fetchAndEmit(),
+      );
 
   channel.subscribe();
 
@@ -1438,4 +1544,3 @@ final declinedRequestsProvider = StreamProvider<List<Map<String, dynamic>>>((ref
 
   return controller.stream;
 });
-

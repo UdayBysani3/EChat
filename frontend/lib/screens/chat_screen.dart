@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
+import 'package:uri_content/uri_content.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -58,6 +59,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   int _recordDuration = 0;
 
   bool _isBlockedByMe = false;
+  Map<String, dynamic>? _replyMessage;
+  final _focusNode = FocusNode();
+  final Map<String, GlobalKey> _messageKeys = {};
 
   @override
   void initState() {
@@ -74,7 +78,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 
   Future<void> _checkBlockStatus() async {
     try {
-      final isBlocked = await ref.read(chatServiceProvider).isBlocked(widget.otherUserId);
+      final isBlocked = await ref
+          .read(chatServiceProvider)
+          .isBlocked(widget.otherUserId);
       if (mounted) {
         setState(() {
           _isBlockedByMe = isBlocked;
@@ -88,6 +94,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     ref.read(activeChatIdProvider.notifier).state = null;
     _messageController.removeListener(_onTextChanged);
     _messageController.dispose();
+    _focusNode.dispose();
     _scrollController.dispose();
     _typingTimer?.cancel();
     _recordTimer?.cancel();
@@ -99,9 +106,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   void _markChatAsRead([List<Map<String, dynamic>>? messages]) {
     final userId = ref.read(supabaseServiceProvider).currentUser?.id;
     if (userId == null) return;
-    
+
     if (messages != null) {
-      final hasUnread = messages.any((m) => m['sender_id'] != userId && m['status'] == 'sent');
+      final hasUnread = messages.any(
+        (m) => m['sender_id'] != userId && m['status'] == 'sent',
+      );
       if (!hasUnread) return;
     }
 
@@ -119,14 +128,15 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     if (currentUserId == null) return;
 
     _typingChannel = client.channel('chat:${widget.chatId}');
-    
+
     _typingChannel!.onBroadcast(
       event: 'typing',
       callback: (payload) {
-        final innerPayload = payload['payload'] as Map<String, dynamic>? ?? payload;
+        final innerPayload =
+            payload['payload'] as Map<String, dynamic>? ?? payload;
         final userId = innerPayload['userId'] as String?;
         final isTyping = innerPayload['isTyping'] as bool? ?? false;
-        
+
         if (userId != currentUserId && mounted) {
           setState(() {
             _otherUserIsTyping = isTyping;
@@ -134,7 +144,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         }
       },
     );
-    
+
     _typingChannel!.subscribe();
   }
 
@@ -164,7 +174,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           payload: {'userId': currentUserId, 'isTyping': true},
         );
       }
-      
+
       _typingTimer?.cancel();
       _typingTimer = Timer(const Duration(seconds: 2), () {
         _isCurrentlyTyping = false;
@@ -197,17 +207,36 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     }
   }
 
+  void _scrollToMessage(String messageId) {
+    final key = _messageKeys[messageId];
+    if (key != null && key.currentContext != null) {
+      Scrollable.ensureVisible(
+        key.currentContext!,
+        duration: const Duration(milliseconds: 400),
+        curve: Curves.easeInOut,
+      );
+    }
+  }
+
   Future<void> _sendMessage() async {
     final text = _messageController.text.trim();
     if (text.isEmpty) return;
 
+    final replyId = _replyMessage?['id']?.toString();
     _messageController.clear();
-    setState(() => _isSending = true);
+    setState(() {
+      _isSending = true;
+      _replyMessage = null;
+    });
 
     try {
       final chatService = ref.read(chatServiceProvider);
-      await chatService.sendTextMessage(widget.chatId, text);
-      
+      await chatService.sendTextMessage(
+        widget.chatId,
+        text,
+        replyToId: replyId,
+      );
+
       // Stop typing status instantly upon sending message
       if (_isCurrentlyTyping) {
         _isCurrentlyTyping = false;
@@ -224,7 +253,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Failed to send: ${e.toString().replaceFirst('Exception: ', '')}'),
+            content: Text(
+              'Failed to send: ${e.toString().replaceFirst('Exception: ', '')}',
+            ),
             backgroundColor: ObsidianMintColors.error,
           ),
         );
@@ -237,19 +268,34 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     }
   }
 
-  Future<void> _uploadAndSendMedia(Uint8List bytes, String fileName, String messageType) async {
-    setState(() => _isSending = true);
+  Future<void> _uploadAndSendMedia(
+    Uint8List bytes,
+    String fileName,
+    String messageType,
+  ) async {
+    final replyId = _replyMessage?['id']?.toString();
+    setState(() {
+      _isSending = true;
+      _replyMessage = null;
+    });
     try {
       final chatService = ref.read(chatServiceProvider);
       // Upload to storage
       final publicUrl = await chatService.uploadBytes(bytes, fileName);
       // Send message
-      await chatService.sendMediaMessage(widget.chatId, publicUrl, messageType);
+      await chatService.sendMediaMessage(
+        widget.chatId,
+        publicUrl,
+        messageType,
+        replyToId: replyId,
+      );
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Failed to upload/send media: ${e.toString().replaceFirst('Exception: ', '')}'),
+            content: Text(
+              'Failed to upload/send media: ${e.toString().replaceFirst('Exception: ', '')}',
+            ),
             backgroundColor: ObsidianMintColors.error,
           ),
         );
@@ -357,7 +403,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           path = 'voice_note.m4a';
         } else {
           final tempDir = await getTemporaryDirectory();
-          path = '${tempDir.path}/voice_${DateTime.now().millisecondsSinceEpoch}.m4a';
+          path =
+              '${tempDir.path}/voice_${DateTime.now().millisecondsSinceEpoch}.m4a';
         }
 
         await _audioRecorder!.start(
@@ -380,7 +427,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
-              content: Text('Microphone permission is required to record voice notes.'),
+              content: Text(
+                'Microphone permission is required to record voice notes.',
+              ),
               backgroundColor: ObsidianMintColors.error,
             ),
           );
@@ -408,7 +457,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       });
 
       if (send && path != null) {
-        final fileName = 'voice_note_${DateTime.now().millisecondsSinceEpoch}.m4a';
+        final fileName =
+            'voice_note_${DateTime.now().millisecondsSinceEpoch}.m4a';
         Uint8List bytes;
         if (kIsWeb) {
           final response = await http.get(Uri.parse(path));
@@ -460,11 +510,17 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           backgroundColor: ObsidianMintColors.surface,
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(20),
-            side: BorderSide(color: ObsidianMintColors.outlineVariant, width: 1),
+            side: BorderSide(
+              color: ObsidianMintColors.outlineVariant,
+              width: 1,
+            ),
           ),
           title: Text(
             'Share Location',
-            style: TextStyle(color: ObsidianMintColors.textPrimary, fontWeight: FontWeight.bold),
+            style: TextStyle(
+              color: ObsidianMintColors.textPrimary,
+              fontWeight: FontWeight.bold,
+            ),
           ),
           content: SingleChildScrollView(
             child: Column(
@@ -475,7 +531,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                     backgroundColor: ObsidianMintColors.primary,
                     foregroundColor: ObsidianMintColors.onPrimary,
                     minimumSize: const Size.fromHeight(48),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
                   ),
                   onPressed: () {
                     Navigator.pop(context);
@@ -492,7 +550,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                       padding: const EdgeInsets.symmetric(horizontal: 8),
                       child: Text(
                         'OR PIN LOCATION',
-                        style: TextStyle(fontSize: 10, color: ObsidianMintColors.textSecondary, fontWeight: FontWeight.bold),
+                        style: TextStyle(
+                          fontSize: 10,
+                          color: ObsidianMintColors.textSecondary,
+                          fontWeight: FontWeight.bold,
+                        ),
                       ),
                     ),
                     Expanded(child: Divider()),
@@ -501,7 +563,10 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                 const SizedBox(height: 16),
                 Text(
                   'Choose a simulated landmark or enter custom coordinates.',
-                  style: TextStyle(color: ObsidianMintColors.textSecondary, fontSize: 13),
+                  style: TextStyle(
+                    color: ObsidianMintColors.textSecondary,
+                    fontSize: 13,
+                  ),
                 ),
                 const SizedBox(height: 16),
                 // Preset options
@@ -553,13 +618,19 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                     Expanded(
                       child: TextField(
                         controller: latController,
-                        keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                        keyboardType: const TextInputType.numberWithOptions(
+                          decimal: true,
+                        ),
                         style: TextStyle(color: ObsidianMintColors.textPrimary),
                         decoration: InputDecoration(
                           labelText: 'Latitude',
-                          labelStyle: TextStyle(color: ObsidianMintColors.textSecondary),
+                          labelStyle: TextStyle(
+                            color: ObsidianMintColors.textSecondary,
+                          ),
                           focusedBorder: UnderlineInputBorder(
-                            borderSide: BorderSide(color: ObsidianMintColors.primary),
+                            borderSide: BorderSide(
+                              color: ObsidianMintColors.primary,
+                            ),
                           ),
                         ),
                       ),
@@ -568,13 +639,19 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                     Expanded(
                       child: TextField(
                         controller: lngController,
-                        keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                        keyboardType: const TextInputType.numberWithOptions(
+                          decimal: true,
+                        ),
                         style: TextStyle(color: ObsidianMintColors.textPrimary),
                         decoration: InputDecoration(
                           labelText: 'Longitude',
-                          labelStyle: TextStyle(color: ObsidianMintColors.textSecondary),
+                          labelStyle: TextStyle(
+                            color: ObsidianMintColors.textSecondary,
+                          ),
                           focusedBorder: UnderlineInputBorder(
-                            borderSide: BorderSide(color: ObsidianMintColors.primary),
+                            borderSide: BorderSide(
+                              color: ObsidianMintColors.primary,
+                            ),
                           ),
                         ),
                       ),
@@ -587,13 +664,18 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           actions: [
             TextButton(
               onPressed: () => Navigator.pop(context),
-              child: Text('Cancel', style: TextStyle(color: ObsidianMintColors.textSecondary)),
+              child: Text(
+                'Cancel',
+                style: TextStyle(color: ObsidianMintColors.textSecondary),
+              ),
             ),
             ElevatedButton(
               style: ElevatedButton.styleFrom(
                 backgroundColor: ObsidianMintColors.primary,
                 foregroundColor: ObsidianMintColors.onPrimary,
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12),
+                ),
               ),
               onPressed: () {
                 final lat = double.tryParse(latController.text) ?? 37.7749;
@@ -618,21 +700,35 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     return ActionChip(
       backgroundColor: ObsidianMintColors.surfaceElevated,
       side: BorderSide(color: ObsidianMintColors.outlineVariant),
-      label: Text(label, style: TextStyle(color: ObsidianMintColors.textPrimary, fontSize: 11)),
+      label: Text(
+        label,
+        style: TextStyle(color: ObsidianMintColors.textPrimary, fontSize: 11),
+      ),
       onPressed: () => onSelect(lat, lng),
     );
   }
 
   Future<void> _sendLocation(double lat, double lng) async {
-    setState(() => _isSending = true);
+    final replyId = _replyMessage?['id']?.toString();
+    setState(() {
+      _isSending = true;
+      _replyMessage = null;
+    });
     try {
       final chatService = ref.read(chatServiceProvider);
-      await chatService.sendLocationMessage(widget.chatId, lat, lng);
+      await chatService.sendLocationMessage(
+        widget.chatId,
+        lat,
+        lng,
+        replyToId: replyId,
+      );
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Failed to share location: ${e.toString().replaceFirst('Exception: ', '')}'),
+            content: Text(
+              'Failed to share location: ${e.toString().replaceFirst('Exception: ', '')}',
+            ),
             backgroundColor: ObsidianMintColors.error,
           ),
         );
@@ -650,7 +746,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     try {
       bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
       if (!serviceEnabled) {
-        throw Exception('Location services are disabled. Please enable them in your settings.');
+        throw Exception(
+          'Location services are disabled. Please enable them in your settings.',
+        );
       }
 
       LocationPermission permission = await Geolocator.checkPermission();
@@ -676,7 +774,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Error sharing location: ${e.toString().replaceFirst('Exception: ', '')}'),
+            content: Text(
+              'Error sharing location: ${e.toString().replaceFirst('Exception: ', '')}',
+            ),
             backgroundColor: ObsidianMintColors.error,
           ),
         );
@@ -714,9 +814,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                 Text(
                   'Share Attachment',
                   style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                        color: ObsidianMintColors.textPrimary,
-                        fontWeight: FontWeight.bold,
-                      ),
+                    color: ObsidianMintColors.textPrimary,
+                    fontWeight: FontWeight.bold,
+                  ),
                 ),
                 const SizedBox(height: 24),
                 GridView.count(
@@ -803,11 +903,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                 width: 1.5,
               ),
             ),
-            child: Icon(
-              icon,
-              color: color,
-              size: 28,
-            ),
+            child: Icon(icon, color: color, size: 28),
           ),
           const SizedBox(height: 8),
           Text(
@@ -850,15 +946,15 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
       decoration: BoxDecoration(
-        color: ObsidianMintColors.surfaceElevated,
+        color: Colors.black,
         borderRadius: BorderRadius.circular(12),
         border: Border.all(
-          color: ObsidianMintColors.outlineVariant,
-          width: 0.5,
+          color: Colors.white.withValues(alpha: 0.2),
+          width: 1.0,
         ),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withValues(alpha: 0.15),
+            color: Colors.black.withValues(alpha: 0.3),
             blurRadius: 4,
             spreadRadius: 0.5,
             offset: const Offset(0, 2),
@@ -868,17 +964,14 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Text(
-            emojiCounts.keys.join(''),
-            style: const TextStyle(fontSize: 12),
-          ),
+          Text(emojiCounts.keys.join(''), style: const TextStyle(fontSize: 12)),
           if (reactions.length > 1) ...[
             const SizedBox(width: 4),
             Text(
               '${reactions.length}',
-              style: TextStyle(
+              style: const TextStyle(
                 fontSize: 10,
-                color: ObsidianMintColors.textSecondary,
+                color: Colors.white,
                 fontWeight: FontWeight.bold,
               ),
             ),
@@ -888,7 +981,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     );
   }
 
-  void _showMessageOptions(BuildContext context, Map<String, dynamic> message, bool isMe) {
+  void _showMessageOptions(
+    BuildContext context,
+    Map<String, dynamic> message,
+    bool isMe,
+  ) {
     final messageId = message['id'].toString();
     final reactions = message['reactions'] as Map<String, dynamic>? ?? {};
     bool showAllReactions = false;
@@ -910,143 +1007,51 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                 ),
                 child: SingleChildScrollView(
                   child: Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 20, horizontal: 16),
+                    padding: const EdgeInsets.symmetric(
+                      vertical: 20,
+                      horizontal: 16,
+                    ),
                     child: Column(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                      // Drag handle
-                      Container(
-                        width: 36,
-                        height: 4,
-                        margin: const EdgeInsets.only(bottom: 20),
-                        decoration: BoxDecoration(
-                          color: ObsidianMintColors.outlineVariant,
-                          borderRadius: BorderRadius.circular(2),
-                        ),
-                      ),
-                      // Reactions row
-                      Text(
-                        'React to Message',
-                        style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                              color: ObsidianMintColors.textSecondary,
-                              fontWeight: FontWeight.bold,
-                            ),
-                      ),
-                      const SizedBox(height: 12),
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                        children: [
-                          ...['👍', '❤️', '😂', '😮', '😢', '🙏'].map((emoji) {
-                            final isSelected = reactions[ref.read(supabaseServiceProvider).currentUser?.id] == emoji;
-                            return InkWell(
-                              onTap: () {
-                                Navigator.pop(context);
-                                ref.read(chatServiceProvider).reactToMessage(
-                                      messageId,
-                                      emoji,
-                                      reactions,
-                                    );
-                              },
-                              borderRadius: BorderRadius.circular(20),
-                              child: Container(
-                                padding: const EdgeInsets.all(8),
-                                decoration: BoxDecoration(
-                                  color: isSelected
-                                      ? ObsidianMintColors.primary.withValues(alpha: 0.2)
-                                      : Colors.transparent,
-                                  shape: BoxShape.circle,
-                                  border: Border.all(
-                                    color: isSelected ? ObsidianMintColors.primary : Colors.transparent,
-                                    width: 1.5,
-                                  ),
-                                ),
-                                child: Text(
-                                  emoji,
-                                  style: const TextStyle(fontSize: 28),
-                                ),
-                              ),
-                            );
-                          }),
-                          // Plus button
-                          InkWell(
-                            onTap: () {
-                              setState(() {
-                                showAllReactions = !showAllReactions;
-                              });
-                            },
-                            borderRadius: BorderRadius.circular(20),
-                            child: Container(
-                              padding: const EdgeInsets.all(8),
-                              decoration: BoxDecoration(
-                                color: showAllReactions
-                                    ? ObsidianMintColors.primary.withValues(alpha: 0.2)
-                                    : Colors.transparent,
-                                shape: BoxShape.circle,
-                                border: Border.all(
-                                  color: showAllReactions ? ObsidianMintColors.primary : Colors.transparent,
-                                  width: 1.5,
-                                ),
-                              ),
-                              child: Icon(
-                                Icons.add_circle_outline_rounded,
-                                size: 28,
-                                color: ObsidianMintColors.primary,
-                              ),
-                            ),
+                        // Drag handle
+                        Container(
+                          width: 36,
+                          height: 4,
+                          margin: const EdgeInsets.only(bottom: 20),
+                          decoration: BoxDecoration(
+                            color: ObsidianMintColors.outlineVariant,
+                            borderRadius: BorderRadius.circular(2),
                           ),
-                        ],
-                      ),
-                      if (showAllReactions) ...[
-                        const SizedBox(height: 16),
+                        ),
+                        // Reactions row
                         Text(
-                          'More Reactions',
-                          style: TextStyle(
-                            fontSize: 12,
-                            color: ObsidianMintColors.textSecondary.withValues(alpha: 0.7),
-                            fontWeight: FontWeight.bold,
-                          ),
+                          'React to Message',
+                          style: Theme.of(context).textTheme.titleSmall
+                              ?.copyWith(
+                                color: ObsidianMintColors.textSecondary,
+                                fontWeight: FontWeight.bold,
+                              ),
                         ),
-                        const SizedBox(height: 8),
-                        SizedBox(
-                          height: 160,
-                          child: GridView.builder(
-                            padding: const EdgeInsets.symmetric(horizontal: 4),
-                            gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                              crossAxisCount: 7,
-                              mainAxisSpacing: 8,
-                              crossAxisSpacing: 8,
-                            ),
-                            itemCount: const [
-                              '🔥', '👏', '🎉', '✨', '😍', '😎', '😊', '🤔', '🥳', '😭',
-                              '🥺', '😡', '😴', '🙄', '🤤', '😋', '😜', '🤩', '💩', '🤡',
-                              '👻', '💀', '👽', '👾', '💖', '💗', '💓', '💙', '💚', '💛',
-                              '💜', '🖤', '🤍', '🤎', '💯', '⭐', '🌟', '💥', '💫', '💦',
-                              '💨', '💤', '👋', '👌', '✌️', '🤞', '🔑', '🎈', '🎁', '🎂',
-                              '🍷', '🍺', '☕', '🍕', '🍔', '🍟', '🍩', '🍪', '🍫', '🍿',
-                              '🌍', '🌋', '🐾', '🐶', '🐱', '🐭', '🐹', '🐰', '🦊', '🐻',
-                              '🐼', '🐨', '🐯', '🦁', '🐮', '🐷', '🐸', '🐵', '🐔', '🐧',
-                              '🐦', '🦆', '🦅', '🦉', '🦇', '🐝', '🦄', '🍎', '🍌', '🍒',
-                              '🍓', '🍀', '🚀', '🚗', '🌈', '🌅', '💡', '🎵', '🎮', '📱'
-                            ].length,
-                            itemBuilder: (context, index) {
-                              final popularEmojis = const [
-                                '🔥', '👏', '🎉', '✨', '😍', '😎', '😊', '🤔', '🥳', '😭',
-                                '🥺', '😡', '😴', '🙄', '🤤', '😋', '😜', '🤩', '💩', '🤡',
-                                '👻', '💀', '👽', '👾', '💖', '💗', '💓', '💙', '💚', '💛',
-                                '💜', '🖤', '🤍', '🤎', '💯', '⭐', '🌟', '💥', '💫', '💦',
-                                '💨', '💤', '👋', '👌', '✌️', '🤞', '🔑', '🎈', '🎁', '🎂',
-                                '🍷', '🍺', '☕', '🍕', '🍔', '🍟', '🍩', '🍪', '🍫', '🍿',
-                                '🌍', '🌋', '🐾', '🐶', '🐱', '🐭', '🐹', '🐰', '🦊', '🐻',
-                                '🐼', '🐨', '🐯', '🦁', '🐮', '🐷', '🐸', '🐵', '🐔', '🐧',
-                                '🐦', '🦆', '🦅', '🦉', '🦇', '🐝', '🦄', '🍎', '🍌', '🍒',
-                                '🍓', '🍀', '🚀', '🚗', '🌈', '🌅', '💡', '🎵', '🎮', '📱'
-                              ];
-                              final emoji = popularEmojis[index];
-                              final isSelected = reactions[ref.read(supabaseServiceProvider).currentUser?.id] == emoji;
+                        const SizedBox(height: 12),
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                          children: [
+                            ...['👍', '❤️', '😂', '😮', '😢', '🙏'].map((
+                              emoji,
+                            ) {
+                              final isSelected =
+                                  reactions[ref
+                                      .read(supabaseServiceProvider)
+                                      .currentUser
+                                      ?.id] ==
+                                  emoji;
                               return InkWell(
                                 onTap: () {
                                   Navigator.pop(context);
-                                  ref.read(chatServiceProvider).reactToMessage(
+                                  ref
+                                      .read(chatServiceProvider)
+                                      .reactToMessage(
                                         messageId,
                                         emoji,
                                         reactions,
@@ -1054,58 +1059,382 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                                 },
                                 borderRadius: BorderRadius.circular(20),
                                 child: Container(
-                                  alignment: Alignment.center,
+                                  padding: const EdgeInsets.all(8),
                                   decoration: BoxDecoration(
                                     color: isSelected
-                                        ? ObsidianMintColors.primary.withValues(alpha: 0.2)
+                                        ? ObsidianMintColors.primary.withValues(
+                                            alpha: 0.2,
+                                          )
                                         : Colors.transparent,
                                     shape: BoxShape.circle,
                                     border: Border.all(
-                                      color: isSelected ? ObsidianMintColors.primary : Colors.transparent,
+                                      color: isSelected
+                                          ? ObsidianMintColors.primary
+                                          : Colors.transparent,
                                       width: 1.5,
                                     ),
                                   ),
                                   child: Text(
                                     emoji,
-                                    style: const TextStyle(fontSize: 22),
+                                    style: const TextStyle(fontSize: 28),
                                   ),
                                 ),
                               );
+                            }),
+                            // Plus button
+                            InkWell(
+                              onTap: () {
+                                setState(() {
+                                  showAllReactions = !showAllReactions;
+                                });
+                              },
+                              borderRadius: BorderRadius.circular(20),
+                              child: Container(
+                                padding: const EdgeInsets.all(8),
+                                decoration: BoxDecoration(
+                                  color: showAllReactions
+                                      ? ObsidianMintColors.primary.withValues(
+                                          alpha: 0.2,
+                                        )
+                                      : Colors.transparent,
+                                  shape: BoxShape.circle,
+                                  border: Border.all(
+                                    color: showAllReactions
+                                        ? ObsidianMintColors.primary
+                                        : Colors.transparent,
+                                    width: 1.5,
+                                  ),
+                                ),
+                                child: Icon(
+                                  Icons.add_circle_outline_rounded,
+                                  size: 28,
+                                  color: ObsidianMintColors.primary,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                        if (showAllReactions) ...[
+                          const SizedBox(height: 16),
+                          Text(
+                            'More Reactions',
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: ObsidianMintColors.textSecondary
+                                  .withValues(alpha: 0.7),
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                          const SizedBox(height: 8),
+                          SizedBox(
+                            height: 160,
+                            child: GridView.builder(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 4,
+                              ),
+                              gridDelegate:
+                                  const SliverGridDelegateWithFixedCrossAxisCount(
+                                    crossAxisCount: 7,
+                                    mainAxisSpacing: 8,
+                                    crossAxisSpacing: 8,
+                                  ),
+                              itemCount: const [
+                                '🔥',
+                                '👏',
+                                '🎉',
+                                '✨',
+                                '😍',
+                                '😎',
+                                '😊',
+                                '🤔',
+                                '🥳',
+                                '😭',
+                                '🥺',
+                                '😡',
+                                '😴',
+                                '🙄',
+                                '🤤',
+                                '😋',
+                                '😜',
+                                '🤩',
+                                '💩',
+                                '🤡',
+                                '👻',
+                                '💀',
+                                '👽',
+                                '👾',
+                                '💖',
+                                '💗',
+                                '💓',
+                                '💙',
+                                '💚',
+                                '💛',
+                                '💜',
+                                '🖤',
+                                '🤍',
+                                '🤎',
+                                '💯',
+                                '⭐',
+                                '🌟',
+                                '💥',
+                                '💫',
+                                '💦',
+                                '💨',
+                                '💤',
+                                '👋',
+                                '👌',
+                                '✌️',
+                                '🤞',
+                                '🔑',
+                                '🎈',
+                                '🎁',
+                                '🎂',
+                                '🍷',
+                                '🍺',
+                                '☕',
+                                '🍕',
+                                '🍔',
+                                '🍟',
+                                '🍩',
+                                '🍪',
+                                '🍫',
+                                '🍿',
+                                '🌍',
+                                '🌋',
+                                '🐾',
+                                '🐶',
+                                '🐱',
+                                '🐭',
+                                '🐹',
+                                '🐰',
+                                '🦊',
+                                '🐻',
+                                '🐼',
+                                '🐨',
+                                '🐯',
+                                '🦁',
+                                '🐮',
+                                '🐷',
+                                '🐸',
+                                '🐵',
+                                '🐔',
+                                '🐧',
+                                '🐦',
+                                '🦆',
+                                '🦅',
+                                '🦉',
+                                '🦇',
+                                '🐝',
+                                '🦄',
+                                '🍎',
+                                '🍌',
+                                '🍒',
+                                '🍓',
+                                '🍀',
+                                '🚀',
+                                '🚗',
+                                '🌈',
+                                '🌅',
+                                '💡',
+                                '🎵',
+                                '🎮',
+                                '📱',
+                              ].length,
+                              itemBuilder: (context, index) {
+                                final popularEmojis = const [
+                                  '🔥',
+                                  '👏',
+                                  '🎉',
+                                  '✨',
+                                  '😍',
+                                  '😎',
+                                  '😊',
+                                  '🤔',
+                                  '🥳',
+                                  '😭',
+                                  '🥺',
+                                  '😡',
+                                  '😴',
+                                  '🙄',
+                                  '🤤',
+                                  '😋',
+                                  '😜',
+                                  '🤩',
+                                  '💩',
+                                  '🤡',
+                                  '👻',
+                                  '💀',
+                                  '👽',
+                                  '👾',
+                                  '💖',
+                                  '💗',
+                                  '💓',
+                                  '💙',
+                                  '💚',
+                                  '💛',
+                                  '💜',
+                                  '🖤',
+                                  '🤍',
+                                  '🤎',
+                                  '💯',
+                                  '⭐',
+                                  '🌟',
+                                  '💥',
+                                  '💫',
+                                  '💦',
+                                  '💨',
+                                  '💤',
+                                  '👋',
+                                  '👌',
+                                  '✌️',
+                                  '🤞',
+                                  '🔑',
+                                  '🎈',
+                                  '🎁',
+                                  '🎂',
+                                  '🍷',
+                                  '🍺',
+                                  '☕',
+                                  '🍕',
+                                  '🍔',
+                                  '🍟',
+                                  '🍩',
+                                  '🍪',
+                                  '🍫',
+                                  '🍿',
+                                  '🌍',
+                                  '🌋',
+                                  '🐾',
+                                  '🐶',
+                                  '🐱',
+                                  '🐭',
+                                  '🐹',
+                                  '🐰',
+                                  '🦊',
+                                  '🐻',
+                                  '🐼',
+                                  '🐨',
+                                  '🐯',
+                                  '🦁',
+                                  '🐮',
+                                  '🐷',
+                                  '🐸',
+                                  '🐵',
+                                  '🐔',
+                                  '🐧',
+                                  '🐦',
+                                  '🦆',
+                                  '🦅',
+                                  '🦉',
+                                  '🦇',
+                                  '🐝',
+                                  '🦄',
+                                  '🍎',
+                                  '🍌',
+                                  '🍒',
+                                  '🍓',
+                                  '🍀',
+                                  '🚀',
+                                  '🚗',
+                                  '🌈',
+                                  '🌅',
+                                  '💡',
+                                  '🎵',
+                                  '🎮',
+                                  '📱',
+                                ];
+                                final emoji = popularEmojis[index];
+                                final isSelected =
+                                    reactions[ref
+                                        .read(supabaseServiceProvider)
+                                        .currentUser
+                                        ?.id] ==
+                                    emoji;
+                                return InkWell(
+                                  onTap: () {
+                                    Navigator.pop(context);
+                                    ref
+                                        .read(chatServiceProvider)
+                                        .reactToMessage(
+                                          messageId,
+                                          emoji,
+                                          reactions,
+                                        );
+                                  },
+                                  borderRadius: BorderRadius.circular(20),
+                                  child: Container(
+                                    alignment: Alignment.center,
+                                    decoration: BoxDecoration(
+                                      color: isSelected
+                                          ? ObsidianMintColors.primary
+                                                .withValues(alpha: 0.2)
+                                          : Colors.transparent,
+                                      shape: BoxShape.circle,
+                                      border: Border.all(
+                                        color: isSelected
+                                            ? ObsidianMintColors.primary
+                                            : Colors.transparent,
+                                        width: 1.5,
+                                      ),
+                                    ),
+                                    child: Text(
+                                      emoji,
+                                      style: const TextStyle(fontSize: 22),
+                                    ),
+                                  ),
+                                );
+                              },
+                            ),
+                          ),
+                        ],
+                        Divider(
+                          height: 24,
+                          color: ObsidianMintColors.outlineVariant,
+                        ),
+                        // Actions list
+                        if (isMe) ...[
+                          ListTile(
+                            leading: Icon(
+                              Icons.delete_outline_rounded,
+                              color: ObsidianMintColors.error,
+                            ),
+                            title: Text(
+                              'Delete Message',
+                              style: TextStyle(
+                                color: ObsidianMintColors.error,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                            onTap: () {
+                              Navigator.pop(context);
+                              _confirmDeleteMessage(messageId);
                             },
                           ),
-                        ),
-                      ],
-                      Divider(height: 24, color: ObsidianMintColors.outlineVariant),
-                      // Actions list
-                      if (isMe) ...[
+                        ],
                         ListTile(
-                          leading: Icon(Icons.delete_outline_rounded, color: ObsidianMintColors.error),
+                          leading: Icon(
+                            Icons.copy_rounded,
+                            color: ObsidianMintColors.textPrimary,
+                          ),
                           title: Text(
-                            'Delete Message',
-                            style: TextStyle(color: ObsidianMintColors.error, fontWeight: FontWeight.bold),
+                            'Copy Text',
+                            style: TextStyle(
+                              color: ObsidianMintColors.textPrimary,
+                            ),
                           ),
                           onTap: () {
                             Navigator.pop(context);
-                            _confirmDeleteMessage(messageId);
+                            final content = message['content'] as String? ?? '';
+                            Clipboard.setData(ClipboardData(text: content));
                           },
                         ),
-                      ],
-                      ListTile(
-                        leading: Icon(Icons.copy_rounded, color: ObsidianMintColors.textPrimary),
-                        title: Text('Copy Text', style: TextStyle(color: ObsidianMintColors.textPrimary)),
-                        onTap: () {
-                          Navigator.pop(context);
-                          final content = message['content'] as String? ?? '';
-                          Clipboard.setData(ClipboardData(text: content));
-                        },
-                      ),
                       ],
                     ),
                   ),
                 ),
               ),
             );
-          }
+          },
         );
       },
     );
@@ -1117,7 +1446,10 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       builder: (context) {
         return AlertDialog(
           backgroundColor: ObsidianMintColors.surface,
-          title: Text('Delete Message', style: TextStyle(color: ObsidianMintColors.textPrimary)),
+          title: Text(
+            'Delete Message',
+            style: TextStyle(color: ObsidianMintColors.textPrimary),
+          ),
           content: Text(
             'Are you sure you want to delete this message? This action cannot be undone.',
             style: TextStyle(color: ObsidianMintColors.textSecondary),
@@ -1125,7 +1457,10 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           actions: [
             TextButton(
               onPressed: () => Navigator.pop(context),
-              child: Text('Cancel', style: TextStyle(color: ObsidianMintColors.textSecondary)),
+              child: Text(
+                'Cancel',
+                style: TextStyle(color: ObsidianMintColors.textSecondary),
+              ),
             ),
             TextButton(
               onPressed: () async {
@@ -1142,7 +1477,13 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                   );
                 }
               },
-              child: Text('Delete', style: TextStyle(color: ObsidianMintColors.error, fontWeight: FontWeight.bold)),
+              child: Text(
+                'Delete',
+                style: TextStyle(
+                  color: ObsidianMintColors.error,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
             ),
           ],
         );
@@ -1151,7 +1492,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   }
 
   void _showOtherUserProfileDialog() {
-    final otherUser = ref.read(otherUserProfileProvider(widget.otherUserId)).value;
+    final otherUser = ref
+        .read(otherUserProfileProvider(widget.otherUserId))
+        .value;
     final name = otherUser?['username'] as String? ?? widget.chatName;
     final email = otherUser?['email'] as String? ?? 'No email shared';
     final bio = otherUser?['bio'] as String? ?? 'No bio yet';
@@ -1163,7 +1506,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       builder: (context) {
         return AlertDialog(
           backgroundColor: ObsidianMintColors.surface,
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(24),
+          ),
           content: SingleChildScrollView(
             child: Column(
               mainAxisSize: MainAxisSize.min,
@@ -1186,13 +1531,20 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                     child: CircleAvatar(
                       radius: 46,
                       backgroundColor: ObsidianMintColors.primaryContainer,
-                      backgroundImage: profileImageUrl != null && profileImageUrl.isNotEmpty
+                      backgroundImage:
+                          profileImageUrl != null && profileImageUrl.isNotEmpty
                           ? CachedNetworkImageProvider(profileImageUrl)
                           : null,
                       child: profileImageUrl == null || profileImageUrl.isEmpty
                           ? Text(
-                              name.isNotEmpty ? name.substring(0, 1).toUpperCase() : 'U',
-                              style: TextStyle(fontSize: 36, fontWeight: FontWeight.bold, color: ObsidianMintColors.primary),
+                              name.isNotEmpty
+                                  ? name.substring(0, 1).toUpperCase()
+                                  : 'U',
+                              style: TextStyle(
+                                fontSize: 36,
+                                fontWeight: FontWeight.bold,
+                                color: ObsidianMintColors.primary,
+                              ),
                             )
                           : null,
                     ),
@@ -1201,7 +1553,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                 const SizedBox(height: 16),
                 Text(
                   name,
-                  style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: ObsidianMintColors.textPrimary),
+                  style: TextStyle(
+                    fontSize: 20,
+                    fontWeight: FontWeight.bold,
+                    color: ObsidianMintColors.textPrimary,
+                  ),
                 ),
                 const SizedBox(height: 4),
                 Row(
@@ -1212,13 +1568,20 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                       height: 8,
                       decoration: BoxDecoration(
                         shape: BoxShape.circle,
-                        color: status == 'online' ? ObsidianMintColors.primary : Colors.grey,
+                        color: status == 'online'
+                            ? ObsidianMintColors.primary
+                            : Colors.grey,
                       ),
                     ),
                     const SizedBox(width: 6),
                     Text(
-                      status.isNotEmpty ? status[0].toUpperCase() + status.substring(1) : 'Offline',
-                      style: TextStyle(fontSize: 12, color: ObsidianMintColors.textSecondary),
+                      status.isNotEmpty
+                          ? status[0].toUpperCase() + status.substring(1)
+                          : 'Offline',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: ObsidianMintColors.textSecondary,
+                      ),
                     ),
                   ],
                 ),
@@ -1229,14 +1592,21 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                   alignment: Alignment.centerLeft,
                   child: Text(
                     'Email Address',
-                    style: TextStyle(fontSize: 11, color: ObsidianMintColors.outline, fontWeight: FontWeight.bold),
+                    style: TextStyle(
+                      fontSize: 11,
+                      color: ObsidianMintColors.outline,
+                      fontWeight: FontWeight.bold,
+                    ),
                   ),
                 ),
                 Align(
                   alignment: Alignment.centerLeft,
                   child: Text(
                     email,
-                    style: TextStyle(fontSize: 14, color: ObsidianMintColors.textPrimary),
+                    style: TextStyle(
+                      fontSize: 14,
+                      color: ObsidianMintColors.textPrimary,
+                    ),
                   ),
                 ),
                 const SizedBox(height: 16),
@@ -1244,20 +1614,33 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                   alignment: Alignment.centerLeft,
                   child: Text(
                     'Bio',
-                    style: TextStyle(fontSize: 11, color: ObsidianMintColors.outline, fontWeight: FontWeight.bold),
+                    style: TextStyle(
+                      fontSize: 11,
+                      color: ObsidianMintColors.outline,
+                      fontWeight: FontWeight.bold,
+                    ),
                   ),
                 ),
                 Align(
                   alignment: Alignment.centerLeft,
                   child: Text(
                     bio,
-                    style: TextStyle(fontSize: 14, color: ObsidianMintColors.textPrimary),
+                    style: TextStyle(
+                      fontSize: 14,
+                      color: ObsidianMintColors.textPrimary,
+                    ),
                   ),
                 ),
                 const SizedBox(height: 24),
                 TextButton(
                   onPressed: () => Navigator.pop(context),
-                  child: Text('Close', style: TextStyle(color: ObsidianMintColors.primary, fontWeight: FontWeight.bold)),
+                  child: Text(
+                    'Close',
+                    style: TextStyle(
+                      color: ObsidianMintColors.primary,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
                 ),
               ],
             ),
@@ -1281,7 +1664,10 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         }
         messenger.showSnackBar(
           SnackBar(
-            content: Text('Unblocked ${widget.chatName}'),
+            content: Text(
+              'Unblocked ${widget.chatName}',
+              style: TextStyle(color: ObsidianMintColors.onPrimaryContainer),
+            ),
             backgroundColor: ObsidianMintColors.primaryContainer,
           ),
         );
@@ -1316,7 +1702,10 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       builder: (context) {
         return AlertDialog(
           backgroundColor: ObsidianMintColors.surface,
-          title: Text('Clear My Messages', style: TextStyle(color: ObsidianMintColors.textPrimary)),
+          title: Text(
+            'Clear My Messages',
+            style: TextStyle(color: ObsidianMintColors.textPrimary),
+          ),
           content: Text(
             'Are you sure you want to delete all messages you sent in this chat? This cannot be undone.',
             style: TextStyle(color: ObsidianMintColors.textSecondary),
@@ -1324,11 +1713,20 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           actions: [
             TextButton(
               onPressed: () => Navigator.pop(context, false),
-              child: Text('Cancel', style: TextStyle(color: ObsidianMintColors.textSecondary)),
+              child: Text(
+                'Cancel',
+                style: TextStyle(color: ObsidianMintColors.textSecondary),
+              ),
             ),
             TextButton(
               onPressed: () => Navigator.pop(context, true),
-              child: Text('Clear', style: TextStyle(color: ObsidianMintColors.error, fontWeight: FontWeight.bold)),
+              child: Text(
+                'Clear',
+                style: TextStyle(
+                  color: ObsidianMintColors.error,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
             ),
           ],
         );
@@ -1342,7 +1740,10 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 
         messenger.showSnackBar(
           SnackBar(
-            content: const Text('Cleared your messages from this chat.'),
+            content: Text(
+              'Cleared your messages from this chat.',
+              style: TextStyle(color: ObsidianMintColors.onPrimaryContainer),
+            ),
             backgroundColor: ObsidianMintColors.primaryContainer,
           ),
         );
@@ -1399,9 +1800,19 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                   child: Column(
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
-                      Icon(Icons.broken_image_rounded, color: ObsidianMintColors.error, size: 40),
+                      Icon(
+                        Icons.broken_image_rounded,
+                        color: ObsidianMintColors.error,
+                        size: 40,
+                      ),
                       SizedBox(height: 8),
-                      Text('Image broken', style: TextStyle(color: ObsidianMintColors.textSecondary, fontSize: 12)),
+                      Text(
+                        'Image broken',
+                        style: TextStyle(
+                          color: ObsidianMintColors.textSecondary,
+                          fontSize: 12,
+                        ),
+                      ),
                     ],
                   ),
                 ),
@@ -1413,17 +1824,16 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       case 'audio':
         return ConstrainedBox(
           constraints: const BoxConstraints(maxWidth: 220),
-          child: AudioPlayerWidget(
-            audioUrl: content,
-            isMe: isMe,
-          ),
+          child: AudioPlayerWidget(audioUrl: content, isMe: isMe),
         );
 
       case 'file':
         final fileName = Uri.parse(content).pathSegments.isNotEmpty
             ? Uri.parse(content).pathSegments.last
             : 'document.bin';
-        final displayFileName = fileName.contains('_') && fileName.indexOf('_') < fileName.length - 1
+        final displayFileName =
+            fileName.contains('_') &&
+                fileName.indexOf('_') < fileName.length - 1
             ? fileName.substring(fileName.indexOf('_') + 1)
             : fileName;
 
@@ -1468,7 +1878,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
               children: [
                 Icon(
                   Icons.insert_drive_file_rounded,
-                  color: isMe ? ObsidianMintColors.onPrimary : ObsidianMintColors.primary,
+                  color: isMe
+                      ? ObsidianMintColors.onPrimary
+                      : ObsidianMintColors.primary,
                   size: 32,
                 ),
                 const SizedBox(width: 10),
@@ -1484,7 +1896,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                         style: TextStyle(
                           fontSize: 14,
                           fontWeight: FontWeight.bold,
-                          color: isMe ? ObsidianMintColors.onPrimary : ObsidianMintColors.textPrimary,
+                          color: isMe
+                              ? ObsidianMintColors.onPrimary
+                              : ObsidianMintColors.textPrimary,
                         ),
                       ),
                       const SizedBox(height: 2),
@@ -1493,7 +1907,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                         style: TextStyle(
                           fontSize: 10,
                           color: isMe
-                              ? ObsidianMintColors.onPrimary.withValues(alpha: 0.7)
+                              ? ObsidianMintColors.onPrimary.withValues(
+                                  alpha: 0.7,
+                                )
                               : ObsidianMintColors.textSecondary,
                         ),
                       ),
@@ -1528,19 +1944,32 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
             try {
               if (Platform.isAndroid) {
                 final geoUri = Uri.parse('geo:$lat,$lng?q=$lat,$lng');
-                launched = await launchUrl(geoUri, mode: LaunchMode.externalApplication);
+                launched = await launchUrl(
+                  geoUri,
+                  mode: LaunchMode.externalApplication,
+                );
               } else if (Platform.isIOS) {
                 final appleUri = Uri.parse('maps://?q=$lat,$lng');
-                launched = await launchUrl(appleUri, mode: LaunchMode.externalApplication);
+                launched = await launchUrl(
+                  appleUri,
+                  mode: LaunchMode.externalApplication,
+                );
                 if (!launched) {
-                  final appleMapsWebUri = Uri.parse('http://maps.apple.com/?q=$lat,$lng');
-                  launched = await launchUrl(appleMapsWebUri, mode: LaunchMode.externalApplication);
+                  final appleMapsWebUri = Uri.parse(
+                    'http://maps.apple.com/?q=$lat,$lng',
+                  );
+                  launched = await launchUrl(
+                    appleMapsWebUri,
+                    mode: LaunchMode.externalApplication,
+                  );
                 }
               }
             } catch (_) {}
 
             if (!launched) {
-              final webUri = Uri.parse('https://www.google.com/maps/search/?api=1&query=$lat,$lng');
+              final webUri = Uri.parse(
+                'https://www.google.com/maps/search/?api=1&query=$lat,$lng',
+              );
               try {
                 await launchUrl(webUri, mode: LaunchMode.externalApplication);
               } catch (_) {}
@@ -1559,11 +1988,14 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                       options: MapOptions(
                         initialCenter: LatLng(lat, lng),
                         initialZoom: 14,
-                        interactionOptions: const InteractionOptions(flags: InteractiveFlag.none),
+                        interactionOptions: const InteractionOptions(
+                          flags: InteractiveFlag.none,
+                        ),
                       ),
                       children: [
                         TileLayer(
-                          urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                          urlTemplate:
+                              'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
                           userAgentPackageName: 'com.example.echat',
                         ),
                         MarkerLayer(
@@ -1593,7 +2025,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                   children: [
                     Icon(
                       Icons.location_on_rounded,
-                      color: isMe ? ObsidianMintColors.onPrimary : ObsidianMintColors.primary,
+                      color: isMe
+                          ? ObsidianMintColors.onPrimary
+                          : ObsidianMintColors.primary,
                       size: 14,
                     ),
                     const SizedBox(width: 4),
@@ -1601,7 +2035,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                       'Shared Location (${lat.toStringAsFixed(4)}, ${lng.toStringAsFixed(4)})',
                       style: TextStyle(
                         fontSize: 11,
-                        color: isMe ? ObsidianMintColors.onPrimary : ObsidianMintColors.textPrimary,
+                        color: isMe
+                            ? ObsidianMintColors.onPrimary
+                            : ObsidianMintColors.textPrimary,
                         fontWeight: FontWeight.bold,
                       ),
                     ),
@@ -1626,21 +2062,261 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     }
   }
 
+  void _onReplyToMessage(Map<String, dynamic> message) {
+    setState(() {
+      _replyMessage = message;
+    });
+    _focusNode.requestFocus();
+  }
+
+  Widget _buildReplyBubbleHeader({
+    required Map<String, dynamic> originalMessage,
+    required bool isMe,
+    required String otherUserName,
+    required String? currentUserId,
+  }) {
+    final origSenderId = originalMessage['sender_id'];
+    final origIsMe = origSenderId == currentUserId;
+    final senderName = origIsMe ? 'You' : otherUserName;
+    final type = originalMessage['message_type'] as String? ?? 'text';
+    final content = originalMessage['content'] as String? ?? '';
+
+    String previewText = '';
+    IconData? previewIcon;
+
+    switch (type) {
+      case 'image':
+        previewText = 'Image';
+        previewIcon = Icons.image_rounded;
+        break;
+      case 'audio':
+        previewText = 'Voice note';
+        previewIcon = Icons.audiotrack_rounded;
+        break;
+      case 'file':
+        previewText = 'Document';
+        previewIcon = Icons.insert_drive_file_rounded;
+        break;
+      case 'location':
+        previewText = 'Location';
+        previewIcon = Icons.location_on_rounded;
+        break;
+      case 'text':
+      default:
+        previewText = content;
+        break;
+    }
+
+    final accentColor = isMe
+        ? ObsidianMintColors.onPrimary
+        : ObsidianMintColors.primary;
+
+    final textColor = isMe
+        ? ObsidianMintColors.onPrimary.withValues(alpha: 0.8)
+        : ObsidianMintColors.textPrimary.withValues(alpha: 0.8);
+
+    final titleColor = isMe
+        ? ObsidianMintColors.onPrimary
+        : ObsidianMintColors.primary;
+
+    return GestureDetector(
+      onTap: () => _scrollToMessage(originalMessage['id'].toString()),
+      child: Container(
+        margin: const EdgeInsets.only(bottom: 6),
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+        decoration: BoxDecoration(
+          color: isMe
+              ? ObsidianMintColors.onPrimary.withValues(alpha: 0.15)
+              : ObsidianMintColors.outlineVariant.withValues(alpha: 0.15),
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: IntrinsicHeight(
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 3,
+                decoration: BoxDecoration(
+                  color: accentColor,
+                  borderRadius: BorderRadius.circular(1.5),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Flexible(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      senderName,
+                      style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.bold,
+                        color: titleColor,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        if (previewIcon != null) ...[
+                          Icon(previewIcon, size: 12, color: textColor),
+                          const SizedBox(width: 4),
+                        ],
+                        Flexible(
+                          child: Text(
+                            previewText,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(fontSize: 11, color: textColor),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildReplyPreviewBar(String otherUserName) {
+    if (_replyMessage == null) return const SizedBox.shrink();
+
+    final origSenderId = _replyMessage!['sender_id'];
+    final currentUserId = ref.read(supabaseServiceProvider).currentUser?.id;
+    final origIsMe = origSenderId == currentUserId;
+    final senderName = origIsMe ? 'You' : otherUserName;
+    final type = _replyMessage!['message_type'] as String? ?? 'text';
+    final content = _replyMessage!['content'] as String? ?? '';
+
+    String previewText = '';
+    IconData? previewIcon;
+
+    switch (type) {
+      case 'image':
+        previewText = 'Image';
+        previewIcon = Icons.image_rounded;
+        break;
+      case 'audio':
+        previewText = 'Voice note';
+        previewIcon = Icons.audiotrack_rounded;
+        break;
+      case 'file':
+        previewText = 'Document';
+        previewIcon = Icons.insert_drive_file_rounded;
+        break;
+      case 'location':
+        previewText = 'Location';
+        previewIcon = Icons.location_on_rounded;
+        break;
+      case 'text':
+      default:
+        previewText = content;
+        break;
+    }
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+      margin: const EdgeInsets.only(bottom: 8),
+      decoration: BoxDecoration(
+        color: ObsidianMintColors.background,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(
+          color: ObsidianMintColors.outlineVariant,
+          width: 0.5,
+        ),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 4,
+            height: 36,
+            decoration: BoxDecoration(
+              color: ObsidianMintColors.primary,
+              borderRadius: BorderRadius.circular(2),
+            ),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  'Replying to $senderName',
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.bold,
+                    color: ObsidianMintColors.primary,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Row(
+                  children: [
+                    if (previewIcon != null) ...[
+                      Icon(
+                        previewIcon,
+                        size: 12,
+                        color: ObsidianMintColors.textSecondary,
+                      ),
+                      const SizedBox(width: 4),
+                    ],
+                    Expanded(
+                      child: Text(
+                        previewText,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: ObsidianMintColors.textSecondary,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+          IconButton(
+            icon: Icon(
+              Icons.close_rounded,
+              size: 20,
+              color: ObsidianMintColors.textSecondary,
+            ),
+            onPressed: () {
+              setState(() {
+                _replyMessage = null;
+              });
+            },
+          ),
+        ],
+      ),
+    ).animate().fade(duration: 150.ms).slideY(begin: 0.2, end: 0.0);
+  }
+
   @override
   Widget build(BuildContext context) {
     final currentUserId = ref.watch(supabaseServiceProvider).currentUser?.id;
-    final messagesAsyncValue = ref.watch(chatMessagesStreamProvider(widget.chatId));
-    
+    final messagesAsyncValue = ref.watch(
+      chatMessagesStreamProvider(widget.chatId),
+    );
+
     // Watch other user's profile to get avatar, name, and status reactively
-    final otherUserAsync = ref.watch(otherUserProfileProvider(widget.otherUserId));
+    final otherUserAsync = ref.watch(
+      otherUserProfileProvider(widget.otherUserId),
+    );
     final otherUser = otherUserAsync.value;
-    
+
     final otherUserStatus = otherUser?['status'] as String? ?? 'offline';
-    final statusText = _otherUserIsTyping 
-        ? 'typing...' 
-        : (otherUserStatus.isNotEmpty 
-            ? otherUserStatus[0].toUpperCase() + otherUserStatus.substring(1) 
-            : 'Offline');
+    final statusText = _otherUserIsTyping
+        ? 'typing...'
+        : (otherUserStatus.isNotEmpty
+              ? otherUserStatus[0].toUpperCase() + otherUserStatus.substring(1)
+              : 'Offline');
 
     final displayName = otherUser?['username'] as String? ?? widget.chatName;
     final profileImageUrl = otherUser?['profile_image'] as String?;
@@ -1665,53 +2341,58 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           onTap: _showOtherUserProfileDialog,
           child: Row(
             children: [
-            CircleAvatar(
-              radius: 18,
-              backgroundColor: ObsidianMintColors.surface,
-              backgroundImage: profileImageUrl != null && profileImageUrl.isNotEmpty
-                  ? CachedNetworkImageProvider(profileImageUrl)
-                  : null,
-              child: profileImageUrl == null || profileImageUrl.isEmpty
-                  ? Text(
-                      displayName.isNotEmpty ? displayName.substring(0, 1).toUpperCase() : 'C',
-                      style: TextStyle(
-                        color: ObsidianMintColors.primary,
-                        fontWeight: FontWeight.bold,
-                        fontSize: 14,
-                      ),
-                    )
-                  : null,
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Text(
-                    displayName,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                      fontSize: 16,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                  Text(
-                    statusText,
-                    style: TextStyle(
-                      fontSize: 11,
-                      color: _otherUserIsTyping
-                          ? ObsidianMintColors.primary
-                          : ObsidianMintColors.primary.withValues(alpha: 0.7),
-                      fontWeight: _otherUserIsTyping ? FontWeight.bold : FontWeight.normal,
-                    ),
-                  ),
-                ],
+              CircleAvatar(
+                radius: 18,
+                backgroundColor: ObsidianMintColors.surface,
+                backgroundImage:
+                    profileImageUrl != null && profileImageUrl.isNotEmpty
+                    ? CachedNetworkImageProvider(profileImageUrl)
+                    : null,
+                child: profileImageUrl == null || profileImageUrl.isEmpty
+                    ? Text(
+                        displayName.isNotEmpty
+                            ? displayName.substring(0, 1).toUpperCase()
+                            : 'C',
+                        style: TextStyle(
+                          color: ObsidianMintColors.primary,
+                          fontWeight: FontWeight.bold,
+                          fontSize: 14,
+                        ),
+                      )
+                    : null,
               ),
-            ),
-          ],
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Text(
+                      displayName,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    Text(
+                      statusText,
+                      style: TextStyle(
+                        fontSize: 11,
+                        color: _otherUserIsTyping
+                            ? ObsidianMintColors.primary
+                            : ObsidianMintColors.primary.withValues(alpha: 0.7),
+                        fontWeight: _otherUserIsTyping
+                            ? FontWeight.bold
+                            : FontWeight.normal,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
         ),
-      ),
         actions: [
           IconButton(
             icon: const Icon(Icons.phone_rounded),
@@ -1719,11 +2400,13 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
               final router = GoRouter.of(context);
               final messenger = ScaffoldMessenger.of(context);
               try {
-                final callId = await ref.read(chatServiceProvider).logCall(
-                  receiverId: widget.otherUserId,
-                  chatId: widget.chatId,
-                  isVideo: false,
-                );
+                final callId = await ref
+                    .read(chatServiceProvider)
+                    .logCall(
+                      receiverId: widget.otherUserId,
+                      chatId: widget.chatId,
+                      isVideo: false,
+                    );
                 router.push(
                   '/call?name=${Uri.encodeComponent(displayName)}&otherUserId=${Uri.encodeComponent(widget.otherUserId)}&isVideo=false&chatId=${widget.chatId}&callId=$callId',
                 );
@@ -1740,11 +2423,13 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
               final router = GoRouter.of(context);
               final messenger = ScaffoldMessenger.of(context);
               try {
-                final callId = await ref.read(chatServiceProvider).logCall(
-                  receiverId: widget.otherUserId,
-                  chatId: widget.chatId,
-                  isVideo: true,
-                );
+                final callId = await ref
+                    .read(chatServiceProvider)
+                    .logCall(
+                      receiverId: widget.otherUserId,
+                      chatId: widget.chatId,
+                      isVideo: true,
+                    );
                 router.push(
                   '/call?name=${Uri.encodeComponent(displayName)}&otherUserId=${Uri.encodeComponent(widget.otherUserId)}&isVideo=true&chatId=${widget.chatId}&callId=$callId',
                 );
@@ -1777,9 +2462,16 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                   value: 'view_profile',
                   child: Row(
                     children: [
-                      Icon(Icons.person_outline_rounded, color: ObsidianMintColors.textPrimary, size: 20),
+                      Icon(
+                        Icons.person_outline_rounded,
+                        color: ObsidianMintColors.textPrimary,
+                        size: 20,
+                      ),
                       const SizedBox(width: 12),
-                      Text('View Profile', style: TextStyle(color: ObsidianMintColors.textPrimary)),
+                      Text(
+                        'View Profile',
+                        style: TextStyle(color: ObsidianMintColors.textPrimary),
+                      ),
                     ],
                   ),
                 ),
@@ -1788,14 +2480,22 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                   child: Row(
                     children: [
                       Icon(
-                        _isBlockedByMe ? Icons.check_circle_outline_rounded : Icons.block_rounded,
-                        color: _isBlockedByMe ? ObsidianMintColors.primary : ObsidianMintColors.error,
+                        _isBlockedByMe
+                            ? Icons.check_circle_outline_rounded
+                            : Icons.block_rounded,
+                        color: _isBlockedByMe
+                            ? ObsidianMintColors.primary
+                            : ObsidianMintColors.error,
                         size: 20,
                       ),
                       const SizedBox(width: 12),
                       Text(
                         _isBlockedByMe ? 'Unblock' : 'Block',
-                        style: TextStyle(color: _isBlockedByMe ? ObsidianMintColors.primary : ObsidianMintColors.error),
+                        style: TextStyle(
+                          color: _isBlockedByMe
+                              ? ObsidianMintColors.primary
+                              : ObsidianMintColors.error,
+                        ),
                       ),
                     ],
                   ),
@@ -1804,9 +2504,16 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                   value: 'clear',
                   child: Row(
                     children: [
-                      Icon(Icons.delete_sweep_outlined, color: ObsidianMintColors.textPrimary, size: 20),
+                      Icon(
+                        Icons.delete_sweep_outlined,
+                        color: ObsidianMintColors.textPrimary,
+                        size: 20,
+                      ),
                       const SizedBox(width: 12),
-                      Text('Clear My Messages', style: TextStyle(color: ObsidianMintColors.textPrimary)),
+                      Text(
+                        'Clear My Messages',
+                        style: TextStyle(color: ObsidianMintColors.textPrimary),
+                      ),
                     ],
                   ),
                 ),
@@ -1817,9 +2524,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         ],
       ),
       body: Container(
-        decoration: BoxDecoration(
-          color: ObsidianMintColors.background,
-        ),
+        decoration: BoxDecoration(color: ObsidianMintColors.background),
         child: Column(
           children: [
             // Messages List
@@ -1839,135 +2544,233 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                           const SizedBox(height: 16),
                           Text(
                             'No messages here yet.',
-                            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                            style: Theme.of(context).textTheme.bodyMedium
+                                ?.copyWith(
                                   color: ObsidianMintColors.textSecondary,
                                 ),
                           ),
                           const SizedBox(height: 4),
                           Text(
                             'Say hello to start the conversation!',
-                            style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                                  color: ObsidianMintColors.outline,
-                                ),
+                            style: Theme.of(context).textTheme.bodySmall
+                                ?.copyWith(color: ObsidianMintColors.outline),
                           ),
                         ],
                       ).animate().fade(duration: 300.ms),
                     );
                   }
 
-                  WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToBottom());
+                  WidgetsBinding.instance.addPostFrameCallback(
+                    (_) => _scrollToBottom(),
+                  );
 
                   return ListView.builder(
                     controller: _scrollController,
-                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
+                    cacheExtent: 5000.0,
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 16,
+                      vertical: 16,
+                    ),
                     itemCount: messages.length,
                     itemBuilder: (context, index) {
                       final message = messages[index];
                       final isMe = message['sender_id'] == currentUserId;
                       final time = _formatTime(message['created_at']);
                       final status = message['status'] as String? ?? 'sent';
-                      final messageType = message['message_type'] as String? ?? 'text';
-                      final reactions = message['reactions'] as Map<String, dynamic>? ?? {};
+                      final messageType =
+                          message['message_type'] as String? ?? 'text';
+                      final reactions =
+                          message['reactions'] as Map<String, dynamic>? ?? {};
                       final hasReactions = reactions.isNotEmpty;
 
+                      Map<String, dynamic>? originalMessage;
+                      if (message['reply_to_id'] != null) {
+                        try {
+                          originalMessage = messages.firstWhere(
+                            (m) => m['id'] == message['reply_to_id'],
+                            orElse: () => <String, dynamic>{},
+                          );
+                          if (originalMessage.isEmpty) {
+                            originalMessage = null;
+                          }
+                        } catch (_) {
+                          originalMessage = null;
+                        }
+                      }
+
+                      final messageId = message['id'].toString();
+                      final messageKey = _messageKeys.putIfAbsent(messageId, () => GlobalKey());
+
                       return Padding(
+                        key: messageKey,
                         padding: EdgeInsets.only(bottom: hasReactions ? 14 : 4),
                         child: Align(
-                          alignment: isMe ? Alignment.centerRight : Alignment.centerLeft,
+                          alignment: isMe
+                              ? Alignment.centerRight
+                              : Alignment.centerLeft,
                           child: Stack(
                             clipBehavior: Clip.none,
                             children: [
-                              GestureDetector(
-                                onLongPress: () => _showMessageOptions(context, message, isMe),
-                                child: Container(
-                                  constraints: BoxConstraints(
-                                    minWidth: hasReactions ? 80.0 : 0.0,
-                                    maxWidth: MediaQuery.of(context).size.width * 0.75,
+                              SwipeToReply(
+                                onReply: () => _onReplyToMessage(message),
+                                child: GestureDetector(
+                                  onLongPress: () => _showMessageOptions(
+                                    context,
+                                    message,
+                                    isMe,
                                   ),
-                                  padding: messageType == 'image' || messageType == 'location'
-                                      ? const EdgeInsets.all(4)
-                                      : const EdgeInsets.only(left: 10, right: 10, top: 6, bottom: 4),
-                                  decoration: BoxDecoration(
-                                    color: isMe
-                                        ? ObsidianMintColors.primary
-                                        : ObsidianMintColors.surface,
-                                    borderRadius: BorderRadius.only(
-                                      topLeft: const Radius.circular(16),
-                                      topRight: const Radius.circular(16),
-                                      bottomLeft: Radius.circular(isMe ? 16 : 0),
-                                      bottomRight: Radius.circular(isMe ? 0 : 16),
+                                  child: Container(
+                                    constraints: BoxConstraints(
+                                      minWidth: hasReactions ? 80.0 : 0.0,
+                                      maxWidth:
+                                          MediaQuery.of(context).size.width *
+                                          0.75,
                                     ),
-                                    border: isMe
-                                        ? null
-                                        : Border.all(
-                                            color: ObsidianMintColors.outlineVariant,
-                                            width: 0.5,
+                                    padding:
+                                        messageType == 'image' ||
+                                            messageType == 'location'
+                                        ? EdgeInsets.only(
+                                            left: 4,
+                                            right: 4,
+                                            top: 4,
+                                            bottom: hasReactions ? 18 : 4,
+                                          )
+                                        : EdgeInsets.only(
+                                            left: 10,
+                                            right: 10,
+                                            top: 6,
+                                            bottom: hasReactions ? 18 : 4,
                                           ),
-                                  ),
-                                  child: messageType == 'text'
-                                      ? CompactTextMessage(
-                                          content: message['content'] as String? ?? '',
-                                          time: time,
-                                          isMe: isMe,
-                                          status: status,
-                                          textStyle: TextStyle(
-                                            fontSize: 15,
-                                            color: isMe
-                                                ? ObsidianMintColors.onPrimary
-                                                : ObsidianMintColors.textPrimary,
-                                          ),
-                                          timeStyle: TextStyle(
-                                            fontSize: 9,
-                                            color: isMe
-                                                ? ObsidianMintColors.onPrimary.withValues(alpha: 0.6)
-                                                : ObsidianMintColors.textSecondary,
-                                          ),
-                                        )
-                                      : Column(
-                                          crossAxisAlignment: CrossAxisAlignment.end,
-                                          mainAxisSize: MainAxisSize.min,
-                                          children: [
-                                            _buildMessageContent(message, isMe),
-                                            const SizedBox(height: 2),
-                                            Padding(
-                                              padding: messageType == 'image' || messageType == 'location'
-                                                  ? const EdgeInsets.symmetric(horizontal: 4)
-                                                  : EdgeInsets.zero,
-                                              child: Row(
-                                                mainAxisSize: MainAxisSize.min,
-                                                children: [
-                                                  Text(
-                                                    time,
-                                                    style: TextStyle(
-                                                      fontSize: 9,
-                                                      color: isMe
-                                                          ? ObsidianMintColors.onPrimary.withValues(alpha: 0.6)
-                                                          : ObsidianMintColors.textSecondary,
-                                                    ),
-                                                  ),
-                                                  if (isMe) ...[
-                                                    const SizedBox(width: 3),
-                                                    Icon(
-                                                      status == 'read'
-                                                          ? Icons.done_all_rounded
-                                                          : Icons.done_rounded,
-                                                      size: 12,
-                                                      color: status == 'read'
-                                                          ? ObsidianMintColors.onPrimary
-                                                          : ObsidianMintColors.onPrimary.withValues(alpha: 0.5),
-                                                    ),
-                                                  ],
-                                                ],
-                                              ),
-                                            ),
-                                          ],
+                                    decoration: BoxDecoration(
+                                      color: isMe
+                                          ? ObsidianMintColors.primary
+                                          : ObsidianMintColors.surface,
+                                      borderRadius: BorderRadius.only(
+                                        topLeft: const Radius.circular(12),
+                                        topRight: const Radius.circular(12),
+                                        bottomLeft: Radius.circular(
+                                          isMe ? 12 : 0,
                                         ),
+                                        bottomRight: Radius.circular(
+                                          isMe ? 0 : 12,
+                                        ),
+                                      ),
+                                      border: isMe
+                                          ? null
+                                          : Border.all(
+                                              color: ObsidianMintColors
+                                                  .outlineVariant,
+                                              width: 0.5,
+                                            ),
+                                    ),
+                                    child: Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        if (originalMessage != null)
+                                          _buildReplyBubbleHeader(
+                                            originalMessage: originalMessage,
+                                            isMe: isMe,
+                                            otherUserName: displayName,
+                                            currentUserId: currentUserId,
+                                          ),
+                                        if (messageType == 'text')
+                                          CompactTextMessage(
+                                            content:
+                                                message['content'] as String? ??
+                                                '',
+                                            time: time,
+                                            isMe: isMe,
+                                            status: status,
+                                            textStyle: TextStyle(
+                                              fontSize: 15,
+                                              color: isMe
+                                                  ? ObsidianMintColors.onPrimary
+                                                  : ObsidianMintColors
+                                                        .textPrimary,
+                                            ),
+                                            timeStyle: TextStyle(
+                                              fontSize: 9,
+                                              color: isMe
+                                                  ? ObsidianMintColors.onPrimary
+                                                        .withValues(alpha: 0.6)
+                                                  : ObsidianMintColors
+                                                        .textSecondary,
+                                            ),
+                                          )
+                                        else
+                                          Column(
+                                            crossAxisAlignment:
+                                                CrossAxisAlignment.end,
+                                            mainAxisSize: MainAxisSize.min,
+                                            children: [
+                                              _buildMessageContent(
+                                                message,
+                                                isMe,
+                                              ),
+                                              const SizedBox(height: 2),
+                                              Padding(
+                                                padding:
+                                                    messageType == 'image' ||
+                                                        messageType ==
+                                                            'location'
+                                                    ? const EdgeInsets.symmetric(
+                                                        horizontal: 4,
+                                                      )
+                                                    : EdgeInsets.zero,
+                                                child: Row(
+                                                  mainAxisSize:
+                                                      MainAxisSize.min,
+                                                  children: [
+                                                    Text(
+                                                      time,
+                                                      style: TextStyle(
+                                                        fontSize: 9,
+                                                        color: isMe
+                                                            ? ObsidianMintColors
+                                                                  .onPrimary
+                                                                  .withValues(
+                                                                    alpha: 0.6,
+                                                                  )
+                                                            : ObsidianMintColors
+                                                                  .textSecondary,
+                                                      ),
+                                                    ),
+                                                    if (isMe) ...[
+                                                      const SizedBox(width: 3),
+                                                      Icon(
+                                                        status == 'read'
+                                                            ? Icons
+                                                                  .done_all_rounded
+                                                            : Icons
+                                                                  .done_rounded,
+                                                        size: 12,
+                                                        color: status == 'read'
+                                                            ? ObsidianMintColors
+                                                                  .onPrimary
+                                                            : ObsidianMintColors
+                                                                  .onPrimary
+                                                                  .withValues(
+                                                                    alpha: 0.5,
+                                                                  ),
+                                                      ),
+                                                    ],
+                                                  ],
+                                                ),
+                                              ),
+                                            ],
+                                          ),
+                                      ],
+                                    ),
+                                  ),
                                 ),
                               ),
                               if (hasReactions)
                                 Positioned(
                                   bottom: -8,
-                                  left: 12,
+                                  left: isMe ? null : 12,
+                                  right: isMe ? 12 : null,
                                   child: _buildReactionsDisplay(reactions),
                                 ),
                             ],
@@ -2008,110 +2811,194 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                   ),
                 ),
               ),
-              child: _isRecording
-                  ? Row(
-                      children: [
-                        IconButton(
-                          icon: Icon(Icons.delete_forever_rounded, color: ObsidianMintColors.error),
-                          onPressed: () => _stopRecording(send: false),
-                        ),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: Container(
-                            height: 40,
-                            padding: const EdgeInsets.symmetric(horizontal: 16),
-                            decoration: BoxDecoration(
-                              color: ObsidianMintColors.background,
-                              borderRadius: BorderRadius.circular(20),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  if (_replyMessage != null) _buildReplyPreviewBar(displayName),
+                  _isRecording
+                      ? Row(
+                          children: [
+                            IconButton(
+                              icon: Icon(
+                                Icons.delete_forever_rounded,
+                                color: ObsidianMintColors.error,
+                              ),
+                              onPressed: () => _stopRecording(send: false),
                             ),
-                            child: Row(
-                              children: [
-                                const BlinkingDot(),
-                                const SizedBox(width: 8),
-                                Text(
-                                  'Recording  ${_formatRecordDuration(_recordDuration)}',
-                                  style: TextStyle(
-                                    color: ObsidianMintColors.textPrimary,
-                                    fontSize: 14,
-                                    fontWeight: FontWeight.bold,
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Container(
+                                height: 40,
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 16,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: ObsidianMintColors.background,
+                                  borderRadius: BorderRadius.circular(20),
+                                ),
+                                child: Row(
+                                  children: [
+                                    const BlinkingDot(),
+                                    const SizedBox(width: 8),
+                                    Text(
+                                      'Recording  ${_formatRecordDuration(_recordDuration)}',
+                                      style: TextStyle(
+                                        color: ObsidianMintColors.textPrimary,
+                                        fontSize: 14,
+                                        fontWeight: FontWeight.bold,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            Container(
+                              decoration: BoxDecoration(
+                                color: ObsidianMintColors.primary,
+                                shape: BoxShape.circle,
+                              ),
+                              child: IconButton(
+                                icon: Icon(
+                                  Icons.send_rounded,
+                                  color: ObsidianMintColors.onPrimary,
+                                ),
+                                onPressed: () => _stopRecording(send: true),
+                              ),
+                            ),
+                          ],
+                        )
+                      : Row(
+                          children: [
+                            IconButton(
+                              icon: Icon(
+                                Icons.add_circle_outline_rounded,
+                                color: ObsidianMintColors.primary,
+                              ),
+                              onPressed: _showAttachmentSheet,
+                            ),
+                            Expanded(
+                              child: TextFormField(
+                                controller: _messageController,
+                                focusNode: _focusNode,
+                                style: TextStyle(
+                                  color: ObsidianMintColors.textPrimary,
+                                ),
+                                decoration: InputDecoration(
+                                  hintText: 'Type a message...',
+                                  hintStyle: TextStyle(
+                                    color: ObsidianMintColors.textSecondary,
+                                  ),
+                                  contentPadding: const EdgeInsets.symmetric(
+                                    horizontal: 16,
+                                    vertical: 10,
+                                  ),
+                                  filled: true,
+                                  fillColor: ObsidianMintColors.background,
+                                  border: OutlineInputBorder(
+                                    borderRadius: BorderRadius.circular(24),
+                                    borderSide: BorderSide.none,
+                                  ),
+                                  enabledBorder: OutlineInputBorder(
+                                    borderRadius: BorderRadius.circular(24),
+                                    borderSide: BorderSide.none,
                                   ),
                                 ),
-                              ],
-                            ),
-                          ),
-                        ),
-                        const SizedBox(width: 8),
-                        Container(
-                          decoration: BoxDecoration(
-                            color: ObsidianMintColors.primary,
-                            shape: BoxShape.circle,
-                          ),
-                          child: IconButton(
-                            icon: Icon(Icons.send_rounded, color: ObsidianMintColors.onPrimary),
-                            onPressed: () => _stopRecording(send: true),
-                          ),
-                        ),
-                      ],
-                    )
-                  : Row(
-                      children: [
-                        IconButton(
-                          icon: Icon(Icons.add_circle_outline_rounded, color: ObsidianMintColors.primary),
-                          onPressed: _showAttachmentSheet,
-                        ),
-                        Expanded(
-                          child: TextFormField(
-                            controller: _messageController,
-                            style: TextStyle(color: ObsidianMintColors.textPrimary),
-                            decoration: InputDecoration(
-                              hintText: 'Type a message...',
-                              hintStyle: TextStyle(color: ObsidianMintColors.textSecondary),
-                              contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-                              filled: true,
-                              fillColor: ObsidianMintColors.background,
-                              border: OutlineInputBorder(
-                                borderRadius: BorderRadius.circular(24),
-                                borderSide: BorderSide.none,
-                              ),
-                              enabledBorder: OutlineInputBorder(
-                                borderRadius: BorderRadius.circular(24),
-                                borderSide: BorderSide.none,
-                              ),
-                            ),
-                            textInputAction: TextInputAction.send,
-                            onFieldSubmitted: (_) => _sendMessage(),
-                          ),
-                        ),
-                        const SizedBox(width: 8),
-                        Container(
-                          decoration: BoxDecoration(
-                            color: ObsidianMintColors.primary,
-                            shape: BoxShape.circle,
-                          ),
-                          child: IconButton(
-                            icon: _isSending
-                                ? SizedBox(
-                                    width: 20,
-                                    height: 20,
-                                    child: CircularProgressIndicator(
-                                      strokeWidth: 2,
-                                      color: ObsidianMintColors.onPrimary,
+                                textInputAction: TextInputAction.send,
+                                onFieldSubmitted: (_) => _sendMessage(),
+                                contentInsertionConfiguration:
+                                    ContentInsertionConfiguration(
+                                      allowedMimeTypes: const <String>[
+                                        'image/gif',
+                                        'image/png',
+                                        'image/jpeg',
+                                        'image/webp',
+                                      ],
+                                      onContentInserted:
+                                          (
+                                            KeyboardInsertedContent content,
+                                          ) async {
+                                            try {
+                                              Uint8List? bytes = content.data;
+                                              if (bytes == null ||
+                                                  bytes.isEmpty) {
+                                                final UriContent uriContent =
+                                                    UriContent();
+                                                bytes = await uriContent.from(
+                                                  Uri.parse(
+                                                    content.uri.toString(),
+                                                  ),
+                                                );
+                                              }
+                                              if (bytes.isNotEmpty) {
+                                                final ext = content.mimeType
+                                                    .split('/')
+                                                    .last;
+                                                final fileName =
+                                                    'keyboard_${DateTime.now().millisecondsSinceEpoch}.$ext';
+                                                await _uploadAndSendMedia(
+                                                  bytes,
+                                                  fileName,
+                                                  'image',
+                                                );
+                                              }
+                                            } catch (e) {
+                                              if (context.mounted) {
+                                                ScaffoldMessenger.of(
+                                                  context,
+                                                ).showSnackBar(
+                                                  SnackBar(
+                                                    content: Text(
+                                                      'Failed to insert keyboard media: $e',
+                                                    ),
+                                                    backgroundColor:
+                                                        ObsidianMintColors
+                                                            .error,
+                                                  ),
+                                                );
+                                              }
+                                            }
+                                          },
                                     ),
-                                  )
-                                : Icon(_isTextEmpty ? Icons.mic_none_rounded : Icons.send_rounded),
-                            color: ObsidianMintColors.onPrimary,
-                            onPressed: () {
-                              if (_isSending) return;
-                              if (_isTextEmpty) {
-                                _startRecording();
-                              } else {
-                                _sendMessage();
-                              }
-                            },
-                          ),
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            Container(
+                              decoration: BoxDecoration(
+                                color: ObsidianMintColors.primary,
+                                shape: BoxShape.circle,
+                              ),
+                              child: IconButton(
+                                icon: _isSending
+                                    ? SizedBox(
+                                        width: 20,
+                                        height: 20,
+                                        child: CircularProgressIndicator(
+                                          strokeWidth: 2,
+                                          color: ObsidianMintColors.onPrimary,
+                                        ),
+                                      )
+                                    : Icon(
+                                        _isTextEmpty
+                                            ? Icons.mic_none_rounded
+                                            : Icons.send_rounded,
+                                      ),
+                                color: ObsidianMintColors.onPrimary,
+                                onPressed: () {
+                                  if (_isSending) return;
+                                  if (_isTextEmpty) {
+                                    _startRecording();
+                                  } else {
+                                    _sendMessage();
+                                  }
+                                },
+                              ),
+                            ),
+                          ],
                         ),
-                      ],
-                    ),
+                ],
+              ),
             ),
           ],
         ),
@@ -2127,7 +3014,8 @@ class BlinkingDot extends StatefulWidget {
   State<BlinkingDot> createState() => _BlinkingDotState();
 }
 
-class _BlinkingDotState extends State<BlinkingDot> with SingleTickerProviderStateMixin {
+class _BlinkingDotState extends State<BlinkingDot>
+    with SingleTickerProviderStateMixin {
   late final AnimationController _controller;
 
   @override
@@ -2211,12 +3099,7 @@ class CompactTextMessage extends StatelessWidget {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.end,
             children: [
-              Flexible(
-                child: Text(
-                  content,
-                  style: textStyle,
-                ),
-              ),
+              Flexible(child: Text(content, style: textStyle)),
               const SizedBox(width: 8),
               _buildTimeRow(),
             ],
@@ -2230,15 +3113,8 @@ class CompactTextMessage extends StatelessWidget {
           if (lastLineRemainingWidth > timeWidth + 8.0) {
             return Stack(
               children: [
-                Text(
-                  content,
-                  style: textStyle,
-                ),
-                Positioned(
-                  bottom: 0,
-                  right: 0,
-                  child: _buildTimeRow(),
-                ),
+                Text(content, style: textStyle),
+                Positioned(bottom: 0, right: 0, child: _buildTimeRow()),
               ],
             );
           }
@@ -2249,15 +3125,9 @@ class CompactTextMessage extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           mainAxisSize: MainAxisSize.min,
           children: [
-            Text(
-              content,
-              style: textStyle,
-            ),
+            Text(content, style: textStyle),
             const SizedBox(height: 2),
-            Align(
-              alignment: Alignment.bottomRight,
-              child: _buildTimeRow(),
-            ),
+            Align(alignment: Alignment.bottomRight, child: _buildTimeRow()),
           ],
         );
       },
@@ -2268,10 +3138,7 @@ class CompactTextMessage extends StatelessWidget {
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
-        Text(
-          time,
-          style: timeStyle,
-        ),
+        Text(time, style: timeStyle),
         if (isMe) ...[
           const SizedBox(width: 3),
           Icon(
@@ -2283,6 +3150,124 @@ class CompactTextMessage extends StatelessWidget {
           ),
         ],
       ],
+    );
+  }
+}
+
+class SwipeToReply extends StatefulWidget {
+  final Widget child;
+  final VoidCallback onReply;
+
+  const SwipeToReply({super.key, required this.child, required this.onReply});
+
+  @override
+  State<SwipeToReply> createState() => _SwipeToReplyState();
+}
+
+class _SwipeToReplyState extends State<SwipeToReply>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _animationController;
+  double _dragOffset = 0.0;
+  bool _thresholdReached = false;
+  static const double _swipeThreshold = 60.0;
+
+  @override
+  void initState() {
+    super.initState();
+    _animationController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 200),
+    );
+  }
+
+  @override
+  void dispose() {
+    _animationController.dispose();
+    super.dispose();
+  }
+
+  void _onHorizontalDragUpdate(DragUpdateDetails details) {
+    final double newOffset = _dragOffset + details.delta.dx;
+    if (newOffset >= 0) {
+      setState(() {
+        if (newOffset > 100) {
+          _dragOffset = 100 + (newOffset - 100) * 0.2;
+        } else {
+          _dragOffset = newOffset;
+        }
+
+        if (_dragOffset >= _swipeThreshold && !_thresholdReached) {
+          _thresholdReached = true;
+          HapticFeedback.lightImpact();
+        } else if (_dragOffset < _swipeThreshold && _thresholdReached) {
+          _thresholdReached = false;
+        }
+      });
+    }
+  }
+
+  void _onHorizontalDragEnd(DragEndDetails details) {
+    if (_thresholdReached) {
+      widget.onReply();
+    }
+    setState(() {
+      _thresholdReached = false;
+    });
+    final double currentOffset = _dragOffset;
+    final animation = Tween<double>(begin: currentOffset, end: 0.0).animate(
+      CurvedAnimation(parent: _animationController, curve: Curves.easeOut),
+    );
+    animation.addListener(() {
+      setState(() {
+        _dragOffset = animation.value;
+      });
+    });
+    _animationController.forward(from: 0.0);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onHorizontalDragUpdate: _onHorizontalDragUpdate,
+      onHorizontalDragEnd: _onHorizontalDragEnd,
+      behavior: HitTestBehavior.translucent,
+      child: Stack(
+        clipBehavior: Clip.none,
+        alignment: Alignment.centerLeft,
+        children: [
+          Positioned(
+            left: -40 + (_dragOffset * 0.4),
+            child: Opacity(
+              opacity: (_dragOffset / _swipeThreshold).clamp(0.0, 1.0),
+              child: Transform.scale(
+                scale: _thresholdReached ? 1.2 : 1.0,
+                child: Container(
+                  padding: const EdgeInsets.all(6),
+                  decoration: BoxDecoration(
+                    color: _thresholdReached
+                        ? ObsidianMintColors.primary
+                        : ObsidianMintColors.outlineVariant.withValues(
+                            alpha: 0.5,
+                          ),
+                    shape: BoxShape.circle,
+                  ),
+                  child: Icon(
+                    Icons.reply_rounded,
+                    size: 18,
+                    color: _thresholdReached
+                        ? ObsidianMintColors.onPrimary
+                        : ObsidianMintColors.primary,
+                  ),
+                ),
+              ),
+            ),
+          ),
+          Transform.translate(
+            offset: Offset(_dragOffset, 0),
+            child: widget.child,
+          ),
+        ],
+      ),
     );
   }
 }

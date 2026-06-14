@@ -13,6 +13,7 @@ list(APPEND FLUTTER_PLUGIN_LIST
   record_windows
   screen_brightness_windows
   share_plus
+  uri_content
   url_launcher_windows
   zego_express_engine
   zego_zim
