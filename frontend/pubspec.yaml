@@ -27,6 +27,8 @@ dependencies:
   zego_uikit_prebuilt_call: ^4.24.2
   flutter_map: ^8.0.0
   latlong2: ^0.9.1
+  mime: ^1.0.4
+  shared_preferences: ^2.5.5
 
 dev_dependencies:
   flutter_test:

@@ -41,6 +41,7 @@ CREATE TABLE IF NOT EXISTS public.chat_requests (
     sender_id UUID REFERENCES public.users(id) ON DELETE CASCADE,
     receiver_id UUID REFERENCES public.users(id) ON DELETE CASCADE,
     status TEXT DEFAULT 'pending' CHECK (status IN ('pending', 'accepted', 'declined')),
+    sender_notified_on_decline BOOLEAN DEFAULT false,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL,
     CONSTRAINT unique_sender_receiver UNIQUE (sender_id, receiver_id)
 );
@@ -292,3 +293,82 @@ ALTER TABLE public.chat_members REPLICA IDENTITY FULL;
 ALTER TABLE public.users REPLICA IDENTITY FULL;
 ALTER TABLE public.chat_requests REPLICA IDENTITY FULL;
 ALTER TABLE public.call_logs REPLICA IDENTITY FULL;
+
+
+-- =============================================================
+-- EXTRA CONSTRAINTS & OPTIMIZED RPC FUNCTIONS
+-- =============================================================
+
+-- Symmetric index to prevent duplicate chat requests in reverse direction
+CREATE UNIQUE INDEX IF NOT EXISTS unique_sender_receiver_symmetric ON public.chat_requests (
+    LEAST(sender_id, receiver_id),
+    GREATEST(sender_id, receiver_id)
+);
+
+-- Mark declined chat requests as notified to the sender
+CREATE OR REPLACE FUNCTION public.mark_decline_notified(request_id UUID)
+RETURNS void
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = 'public'
+AS $$
+BEGIN
+  UPDATE public.chat_requests
+  SET sender_notified_on_decline = true
+  WHERE id = request_id AND sender_id = auth.uid();
+END;
+$$;
+
+-- Optimized chat retrieval RPC resolving N+1 querying bottlenecks
+CREATE OR REPLACE FUNCTION public.get_user_chats(user_uuid UUID)
+RETURNS TABLE (
+  chat_id UUID,
+  recipient_id UUID,
+  recipient_email TEXT,
+  recipient_username TEXT,
+  recipient_profile_image TEXT,
+  recipient_status TEXT,
+  last_message_content TEXT,
+  last_message_type TEXT,
+  last_message_time TIMESTAMP WITH TIME ZONE,
+  last_message_sender_id UUID
+)
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = 'public'
+AS $$
+BEGIN
+  RETURN QUERY
+  WITH user_chats AS (
+    SELECT cm.chat_id, cm2.user_id AS recipient_id
+    FROM public.chat_members cm
+    JOIN public.chat_members cm2 ON cm.chat_id = cm2.chat_id AND cm2.user_id <> user_uuid
+    WHERE cm.user_id = user_uuid
+  ),
+  chat_last_messages AS (
+    SELECT DISTINCT ON (m.chat_id)
+      m.chat_id,
+      m.content,
+      m.message_type,
+      m.created_at,
+      m.sender_id
+    FROM public.messages m
+    ORDER BY m.chat_id, m.created_at DESC
+  )
+  SELECT
+    uc.chat_id,
+    u.id AS recipient_id,
+    u.email AS recipient_email,
+    u.username AS recipient_username,
+    u.profile_image AS recipient_profile_image,
+    u.status AS recipient_status,
+    lm.content AS last_message_content,
+    lm.message_type AS last_message_type,
+    lm.created_at AS last_message_time,
+    lm.sender_id AS last_message_sender_id
+  FROM user_chats uc
+  JOIN public.users u ON uc.recipient_id = u.id
+  LEFT JOIN chat_last_messages lm ON uc.chat_id = lm.chat_id
+  ORDER BY COALESCE(lm.created_at, '1970-01-01'::timestamp with time zone) DESC;
+END;
+$$;

@@ -3,6 +3,7 @@ import 'dart:math';
 import 'package:http/http.dart' as http;
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'app_config.dart';
 
 class SupabaseService {
@@ -116,6 +117,11 @@ class SupabaseService {
       if (userId != null) {
         await _client.from('users').update({'status': 'offline'}).eq('id', userId);
       }
+    } catch (_) {}
+    // Clear persisted local session token on signout
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.remove('local_session_token');
     } catch (_) {}
     await _client.auth.signOut();
   }

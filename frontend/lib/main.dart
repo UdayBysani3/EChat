@@ -2,15 +2,21 @@ import 'package:flutter/material.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'services/app_config.dart';
 import 'config/theme.dart';
 import 'config/router.dart';
+import 'services/chat_service.dart';
+import 'services/global_notification_controller.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
   // Load environment variables from .env
   await dotenv.load(fileName: '.env');
+
+  // Initialize SharedPreferences
+  final sharedPrefs = await SharedPreferences.getInstance();
 
   // Initialize Supabase Auth
   try {
@@ -25,8 +31,11 @@ void main() async {
   }
 
   runApp(
-    const ProviderScope(
-      child: EChatApp(),
+    ProviderScope(
+      overrides: [
+        sharedPreferencesProvider.overrideWithValue(sharedPrefs),
+      ],
+      child: const EChatApp(),
     ),
   );
 }
@@ -45,6 +54,10 @@ class EChatApp extends ConsumerWidget {
       themeMode: themeMode,
       routerConfig: appRouter,
       debugShowCheckedModeBanner: false,
+      builder: (context, child) {
+        ref.watch(globalNotificationControllerProvider);
+        return child!;
+      },
     );
   }
 }

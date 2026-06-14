@@ -1,6 +1,5 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
-import 'package:flutter_animate/flutter_animate.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:cached_network_image/cached_network_image.dart';
@@ -97,33 +96,35 @@ class _HomeShellState extends ConsumerState<HomeShell> with WidgetsBindingObserv
           return AlertDialog(
             backgroundColor: ObsidianMintColors.surface,
             title: Text('New Chat Request', style: TextStyle(color: ObsidianMintColors.textPrimary)),
-            content: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                Text(
-                  'Enter the email address of the person you want to connect with.',
-                  style: TextStyle(color: ObsidianMintColors.textSecondary, fontSize: 13),
-                ),
-                const SizedBox(height: 16),
-                if (dialogError != null) ...[
+            content: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
                   Text(
-                    dialogError!,
-                    style: TextStyle(color: ObsidianMintColors.error, fontSize: 12),
+                    'Enter the email address of the person you want to connect with.',
+                    style: TextStyle(color: ObsidianMintColors.textSecondary, fontSize: 13),
                   ),
-                  const SizedBox(height: 8),
+                  const SizedBox(height: 16),
+                  if (dialogError != null) ...[
+                    Text(
+                      dialogError!,
+                      style: TextStyle(color: ObsidianMintColors.error, fontSize: 12),
+                    ),
+                    const SizedBox(height: 8),
+                  ],
+                  TextField(
+                    controller: emailController,
+                    style: TextStyle(color: ObsidianMintColors.textPrimary),
+                    decoration: const InputDecoration(
+                      labelText: 'Email Address',
+                      hintText: 'name@example.com',
+                      prefixIcon: Icon(Icons.email_outlined),
+                    ),
+                    keyboardType: TextInputType.emailAddress,
+                  ),
                 ],
-                TextField(
-                  controller: emailController,
-                  style: TextStyle(color: ObsidianMintColors.textPrimary),
-                  decoration: const InputDecoration(
-                    labelText: 'Email Address',
-                    hintText: 'name@example.com',
-                    prefixIcon: Icon(Icons.email_outlined),
-                  ),
-                  keyboardType: TextInputType.emailAddress,
-                ),
-              ],
+              ),
             ),
             actions: [
               TextButton(
@@ -228,17 +229,23 @@ class _HomeShellState extends ConsumerState<HomeShell> with WidgetsBindingObserv
       builder: (context) {
         return StatefulBuilder(
           builder: (context, setModalState) {
-            return Padding(
-              padding: EdgeInsets.only(
-                left: 16,
-                right: 16,
-                top: 20,
-                bottom: 20 + MediaQuery.of(context).viewInsets.bottom,
-              ),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
+            return SafeArea(
+              child: ConstrainedBox(
+                constraints: BoxConstraints(
+                  maxHeight: MediaQuery.of(context).size.height * 0.85,
+                ),
+                child: SingleChildScrollView(
+                  child: Padding(
+                    padding: EdgeInsets.only(
+                      left: 16,
+                      right: 16,
+                      top: 20,
+                      bottom: 20 + MediaQuery.of(context).viewInsets.bottom,
+                    ),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
                   Align(
                     alignment: Alignment.center,
                     child: Container(
@@ -431,163 +438,62 @@ class _HomeShellState extends ConsumerState<HomeShell> with WidgetsBindingObserv
                           )
                         : const Text('Save Changes'),
                   ),
-                ],
+                  ],
+                ),
               ),
-            );
-          },
-        );
-      },
-    );
-  }
-
-  BuildContext? _incomingCallDialogContext;
-
-  void _showIncomingCallDialog(Map<String, dynamic> call) {
-    if (_incomingCallDialogContext != null) return;
-
-    final caller = call['caller'] as Map<String, dynamic>?;
-    final callerName = caller?['username'] as String? ?? caller?['email'] as String? ?? 'User';
-    final callerProfileImage = caller?['profile_image'] as String?;
-    final isVideo = call['is_video'] as bool? ?? false;
-    final callId = call['id'] as String;
-    final chatId = call['chat_id'] as String;
-
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (dialogCtx) {
-        _incomingCallDialogContext = dialogCtx;
-        return PopScope(
-          canPop: false,
-          child: AlertDialog(
-            backgroundColor: ObsidianMintColors.surface,
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
-            contentPadding: const EdgeInsets.all(24),
-            content: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Stack(
-                  alignment: Alignment.center,
-                  children: [
-                    ...List.generate(3, (index) {
-                      return Container(
-                        width: 90 + (index * 25),
-                        height: 90 + (index * 25),
-                        decoration: BoxDecoration(
-                          shape: BoxShape.circle,
-                          color: ObsidianMintColors.primary.withValues(alpha: 0.1),
-                        ),
-                      ).animate(onPlay: (controller) => controller.repeat())
-                       .scale(
-                         begin: const Offset(0.8, 0.8),
-                         end: const Offset(1.2, 1.2),
-                         duration: 1200.ms,
-                         delay: (index * 300).ms,
-                         curve: Curves.easeInOut,
-                       )
-                       .fadeOut(duration: 1200.ms);
-                    }),
-                     CircleAvatar(
-                      radius: 36,
-                      backgroundColor: ObsidianMintColors.primaryContainer,
-                      backgroundImage: callerProfileImage != null && callerProfileImage.isNotEmpty
-                          ? CachedNetworkImageProvider(callerProfileImage)
-                          : null,
-                      child: callerProfileImage == null || callerProfileImage.isEmpty
-                          ? Text(
-                              callerName.substring(0, 1).toUpperCase(),
-                              style: TextStyle(
-                                fontSize: 28,
-                                fontWeight: FontWeight.bold,
-                                color: ObsidianMintColors.primary,
-                              ),
-                            )
-                          : null,
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 24),
-                Text(
-                  callerName,
-                  style: TextStyle(
-                    fontSize: 20,
-                    fontWeight: FontWeight.bold,
-                    color: ObsidianMintColors.textPrimary,
-                  ),
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  isVideo ? 'Incoming Video Call...' : 'Incoming Voice Call...',
-                  style: TextStyle(
-                    fontSize: 14,
-                    color: ObsidianMintColors.textSecondary,
-                  ),
-                ),
-                const SizedBox(height: 32),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                  children: [
-                    FloatingActionButton(
-                      heroTag: 'decline_btn',
-                      backgroundColor: ObsidianMintColors.error,
-                      foregroundColor: Colors.white,
-                      elevation: 2,
-                      onPressed: () async {
-                        _incomingCallDialogContext = null;
-                        Navigator.of(dialogCtx).pop();
-                        await ref.read(chatServiceProvider).updateCallStatus(callId, 'missed');
-                      },
-                      child: const Icon(Icons.call_end_rounded, size: 28),
-                    ),
-                    FloatingActionButton(
-                      heroTag: 'accept_btn',
-                      backgroundColor: ObsidianMintColors.primary,
-                      foregroundColor: Colors.white,
-                      elevation: 2,
-                      onPressed: () async {
-                        _incomingCallDialogContext = null;
-                        Navigator.of(dialogCtx).pop();
-                        if (mounted) {
-                          context.push(
-                            '/call?name=${Uri.encodeComponent(callerName)}&otherUserId=${Uri.encodeComponent(caller?['id'] ?? '')}&isVideo=$isVideo&chatId=$chatId&callId=$callId',
-                          );
-                        }
-                      },
-                      child: Icon(isVideo ? Icons.videocam_rounded : Icons.phone_rounded, size: 28),
-                    ),
-                  ],
-                ),
-              ],
             ),
           ),
         );
       },
-    ).then((_) {
-      _incomingCallDialogContext = null;
-    });
+    );
+  },
+);
   }
 
   @override
   Widget build(BuildContext context) {
-    // Listen for incoming call requests globally in home shell
-    ref.listen<AsyncValue<Map<String, dynamic>?>>(incomingCallsStreamProvider, (previous, next) {
-      final call = next.value;
-      if (call != null) {
-        _showIncomingCallDialog(call);
-      } else {
-        if (_incomingCallDialogContext != null) {
-          Navigator.of(_incomingCallDialogContext!).pop();
-          _incomingCallDialogContext = null;
-        }
-      }
-    });
 
     final currentUser = ref.watch(supabaseServiceProvider).currentUser;
     final userEmail = currentUser?.email ?? 'user@example.com';
     final profileAsync = ref.watch(currentUserProfileProvider);
 
+    final requestsAsync = ref.watch(pendingRequestsProvider);
+    final pendingCount = requestsAsync.maybeWhen(
+      data: (list) => list.length,
+      orElse: () => 0,
+    );
+
     return Scaffold(
       appBar: AppBar(
+        leading: Builder(
+          builder: (context) {
+            return Stack(
+              alignment: Alignment.center,
+              children: [
+                IconButton(
+                  icon: const Icon(Icons.menu),
+                  onPressed: () => Scaffold.of(context).openDrawer(),
+                ),
+                if (pendingCount > 0)
+                  Positioned(
+                    right: 12,
+                    top: 12,
+                    child: Container(
+                      padding: const EdgeInsets.all(2),
+                      decoration: BoxDecoration(
+                        color: ObsidianMintColors.primary,
+                        shape: BoxShape.circle,
+                      ),
+                      constraints: const BoxConstraints(
+                        minWidth: 8,
+                        minHeight: 8,
+                      ),
+                    ),
+                  ),
+              ],
+            );
+          },
+        ),
         title: Text(_titles[_currentIndex]),
         actions: [
           IconButton(
@@ -598,9 +504,17 @@ class _HomeShellState extends ConsumerState<HomeShell> with WidgetsBindingObserv
       ),
       drawer: Drawer(
         backgroundColor: ObsidianMintColors.background,
-        child: Column(
-          children: [
-            profileAsync.when(
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            return SingleChildScrollView(
+              child: ConstrainedBox(
+                constraints: BoxConstraints(
+                  minHeight: constraints.maxHeight,
+                ),
+                child: IntrinsicHeight(
+                  child: Column(
+                    children: [
+                      profileAsync.when(
               data: (profile) {
                 final username = profile?['username'] as String? ?? 'EChat User';
                 final bio = profile?['bio'] as String? ?? 'No bio yet';
@@ -813,6 +727,13 @@ class _HomeShellState extends ConsumerState<HomeShell> with WidgetsBindingObserv
             ListTile(
               leading: Icon(Icons.notifications_none_rounded, color: ObsidianMintColors.textSecondary),
               title: Text('Requests', style: TextStyle(color: ObsidianMintColors.textPrimary)),
+              trailing: pendingCount > 0
+                  ? Badge(
+                      label: Text(pendingCount.toString()),
+                      backgroundColor: ObsidianMintColors.primary,
+                      textColor: ObsidianMintColors.onPrimary,
+                    )
+                  : null,
               onTap: () {
                 Navigator.pop(context);
                 setState(() => _currentIndex = 1);
@@ -852,8 +773,13 @@ class _HomeShellState extends ConsumerState<HomeShell> with WidgetsBindingObserv
                 _logout();
               },
             ),
-            SizedBox(height: MediaQuery.of(context).padding.bottom + 20),
-          ],
+                      SizedBox(height: MediaQuery.of(context).padding.bottom + 20),
+                    ],
+                  ),
+                ),
+              ),
+            );
+          },
         ),
       ),
       body: IndexedStack(
@@ -874,15 +800,29 @@ class _HomeShellState extends ConsumerState<HomeShell> with WidgetsBindingObserv
       bottomNavigationBar: BottomNavigationBar(
         currentIndex: _currentIndex,
         onTap: (index) => setState(() => _currentIndex = index),
-        items: const [
-          BottomNavigationBarItem(
+        items: [
+          const BottomNavigationBarItem(
             icon: Icon(Icons.chat_bubble_outline_rounded),
             activeIcon: Icon(Icons.chat_bubble_rounded),
             label: 'Chats',
           ),
           BottomNavigationBarItem(
-            icon: Icon(Icons.group_add_outlined),
-            activeIcon: Icon(Icons.group_add_rounded),
+            icon: pendingCount > 0
+                ? Badge(
+                    label: Text(pendingCount.toString()),
+                    backgroundColor: ObsidianMintColors.primary,
+                    textColor: ObsidianMintColors.onPrimary,
+                    child: const Icon(Icons.group_add_outlined),
+                  )
+                : const Icon(Icons.group_add_outlined),
+            activeIcon: pendingCount > 0
+                ? Badge(
+                    label: Text(pendingCount.toString()),
+                    backgroundColor: ObsidianMintColors.primary,
+                    textColor: ObsidianMintColors.onPrimary,
+                    child: const Icon(Icons.group_add_rounded),
+                  )
+                : const Icon(Icons.group_add_rounded),
             label: 'Requests',
           ),
         ],
