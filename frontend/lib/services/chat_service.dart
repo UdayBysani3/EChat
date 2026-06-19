@@ -188,6 +188,24 @@ class ChatService {
     final userId = currentUserId;
     if (userId == null) return [];
 
+    final Map<String, int> unreadCounts = {};
+    try {
+      final unreadResponse = await _client
+          .from('messages')
+          .select('chat_id')
+          .neq('sender_id', userId)
+          .eq('status', 'sent');
+
+      for (final row in unreadResponse) {
+        final cid = row['chat_id'] as String?;
+        if (cid != null) {
+          unreadCounts[cid] = (unreadCounts[cid] ?? 0) + 1;
+        }
+      }
+    } catch (e) {
+      debugPrint('[ChatService] Error fetching unread counts: $e');
+    }
+
     try {
       final response = await _client.rpc(
         'get_user_chats',
@@ -216,6 +234,7 @@ class ChatService {
               'last_message': lastMsgText,
               'last_message_time': item['last_message_time'],
               'last_message_sender_id': item['last_message_sender_id'],
+              'unread_count': unreadCounts[item['chat_id']] ?? 0,
             };
           }
         }
@@ -225,7 +244,7 @@ class ChatService {
       debugPrint(
         '[ChatService] Error calling get_user_chats RPC: $e. Falling back...',
       );
-      return _getChatsListFallback();
+      return _getChatsListFallback(unreadCounts);
     }
   }
 
@@ -240,13 +259,43 @@ class ChatService {
       return '📄 Document';
     } else if (t == 'location') {
       return '📍 Location';
+    } else if (_isCallLogMessage(content)) {
+      return _translateCallLogMessagePreview(content);
     } else {
       return content;
     }
   }
 
+  bool _isCallLogMessage(String content) {
+    final parts = content.split('|');
+    if (parts.length != 3) return false;
+    final status = parts[0];
+    return status == 'initiated' ||
+        status == 'ringing' ||
+        status == 'connected' ||
+        status == 'missed' ||
+        status == 'ended';
+  }
+
+  String _translateCallLogMessagePreview(String content) {
+    final parts = content.split('|');
+    if (parts.length != 3) return content;
+    final status = parts[0];
+    final isVideo = parts[1] == 'true';
+
+    if (status == 'initiated') {
+      return isVideo ? '📹 Outgoing Video Call' : '📞 Outgoing Voice Call';
+    } else if (status == 'missed') {
+      return isVideo ? '🚫 Missed Video Call' : '🚫 Missed Voice Call';
+    } else if (status == 'ended') {
+      return isVideo ? '📹 Video Call Ended' : '📞 Voice Call Ended';
+    } else {
+      return isVideo ? '📹 Video Call' : '📞 Voice Call';
+    }
+  }
+
   // Fallback chat list retrieval in case database RPC function is missing
-  Future<List<Map<String, dynamic>>> _getChatsListFallback() async {
+  Future<List<Map<String, dynamic>>> _getChatsListFallback(Map<String, int> unreadCounts) async {
     final userId = currentUserId;
     if (userId == null) return [];
 
@@ -287,17 +336,7 @@ class ChatService {
       if (lastMsgResponse != null) {
         final type = lastMsgResponse['message_type'] as String? ?? 'text';
         final content = lastMsgResponse['content'] as String? ?? '';
-        if (type == 'image') {
-          lastMessageText = '📷 Image';
-        } else if (type == 'audio') {
-          lastMessageText = '🎵 Voice note';
-        } else if (type == 'file') {
-          lastMessageText = '📄 Document';
-        } else if (type == 'location') {
-          lastMessageText = '📍 Location';
-        } else {
-          lastMessageText = content;
-        }
+        lastMessageText = _formatLastMessagePreview(content, type);
       }
 
       results.add({
@@ -306,6 +345,7 @@ class ChatService {
         'last_message': lastMessageText,
         'last_message_time': lastMsgResponse?['created_at'],
         'last_message_sender_id': lastMsgResponse?['sender_id'],
+        'unread_count': unreadCounts[chatId] ?? 0,
       });
     }
 
@@ -515,7 +555,7 @@ class ChatService {
 
   // Listen to realtime messages in a specific chat
   Stream<List<Map<String, dynamic>>> streamMessages(String chatId) {
-    final controller = StreamController<List<Map<String, dynamic>>>();
+    final controller = StreamController<List<Map<String, dynamic>>>.broadcast();
 
     Future<void> fetchAndEmit() async {
       try {
@@ -586,7 +626,7 @@ class ChatService {
     final userId = currentUserId;
     if (userId == null) return const Stream.empty();
 
-    final controller = StreamController<List<Map<String, dynamic>>>();
+    final controller = StreamController<List<Map<String, dynamic>>>.broadcast();
 
     Future<void> fetchAndEmit() async {
       try {
@@ -745,6 +785,19 @@ class ChatService {
         .eq('sender_id', userId);
   }
 
+  // Delete multiple messages (only sender is allowed for each message)
+  Future<void> deleteMessages(List<String> messageIds) async {
+    final userId = currentUserId;
+    if (userId == null) throw Exception('User not authenticated');
+    if (messageIds.isEmpty) return;
+
+    await _client
+        .from('messages')
+        .delete()
+        .inFilter('id', messageIds)
+        .eq('sender_id', userId);
+  }
+
   // Clear all messages sent by current user in a chat in one query
   Future<void> clearMyMessages(String chatId) async {
     final userId = currentUserId;
@@ -772,10 +825,38 @@ class ChatService {
     };
 
     if (profileImage != null) {
+      try {
+        final currentProfile = await _client
+            .from('users')
+            .select('profile_image')
+            .eq('id', userId)
+            .maybeSingle();
+        final oldImageUrl = currentProfile?['profile_image'] as String?;
+        if (oldImageUrl != null && oldImageUrl.isNotEmpty) {
+          await _deleteFileFromUrl(oldImageUrl);
+        }
+      } catch (e) {
+        debugPrint('[ChatService] Error cleaning up old profile image: $e');
+      }
       updates['profile_image'] = profileImage;
     }
 
     await _client.from('users').update(updates).eq('id', userId);
+  }
+
+  Future<void> _deleteFileFromUrl(String url) async {
+    try {
+      final uri = Uri.parse(url);
+      final segments = uri.pathSegments;
+      final bucketIndex = segments.indexOf('media');
+      if (bucketIndex != -1 && bucketIndex < segments.length - 1) {
+        final filePath = segments.sublist(bucketIndex + 1).join('/');
+        await _client.storage.from('media').remove([filePath]);
+        debugPrint('[ChatService] Successfully deleted old file: $filePath');
+      }
+    } catch (e) {
+      debugPrint('[ChatService] Could not delete file from URL: $e');
+    }
   }
 
   // ─────────────────────────────────────────────────────────────
@@ -842,7 +923,7 @@ class ChatService {
     final userId = currentUserId;
     if (userId == null) return const Stream.empty();
 
-    final controller = StreamController<List<Map<String, dynamic>>>();
+    final controller = StreamController<List<Map<String, dynamic>>>.broadcast();
 
     Future<void> fetchActive() async {
       try {
@@ -949,7 +1030,7 @@ final chatsListProvider = StreamProvider<List<Map<String, dynamic>>>((ref) {
   final chatService = ref.watch(chatServiceProvider);
   final client = Supabase.instance.client;
 
-  final controller = StreamController<List<Map<String, dynamic>>>();
+  final controller = StreamController<List<Map<String, dynamic>>>.broadcast();
 
   // Initial fetch
   Future<void> fetchAndEmit() async {
@@ -1038,7 +1119,7 @@ final pendingRequestsProvider = StreamProvider<List<Map<String, dynamic>>>((
   final chatService = ref.watch(chatServiceProvider);
   final client = Supabase.instance.client;
 
-  final controller = StreamController<List<Map<String, dynamic>>>();
+  final controller = StreamController<List<Map<String, dynamic>>>.broadcast();
 
   // Initial fetch
   Future<void> fetchAndEmit() async {
@@ -1112,7 +1193,7 @@ final chatMessagesStreamProvider =
 // ─────────────────────────────────────────────────────────────
 final userStatusProvider = StreamProvider.family<String, String>((ref, userId) {
   final client = Supabase.instance.client;
-  final controller = StreamController<String>();
+  final controller = StreamController<String>.broadcast();
 
   Future<void> fetchStatus() async {
     try {
@@ -1168,7 +1249,7 @@ final userStatusProvider = StreamProvider.family<String, String>((ref, userId) {
 final otherUserProfileProvider =
     StreamProvider.family<Map<String, dynamic>?, String>((ref, userId) {
       final client = Supabase.instance.client;
-      final controller = StreamController<Map<String, dynamic>?>();
+      final controller = StreamController<Map<String, dynamic>?>.broadcast();
 
       Future<void> fetchProfile() async {
         try {
@@ -1226,7 +1307,7 @@ final currentUserProfileProvider = StreamProvider<Map<String, dynamic>?>((ref) {
 
   final client = Supabase.instance.client;
 
-  final controller = StreamController<Map<String, dynamic>?>();
+  final controller = StreamController<Map<String, dynamic>?>.broadcast();
 
   Future<void> fetchProfile() async {
     try {
@@ -1287,7 +1368,7 @@ final callHistoryProvider = StreamProvider<List<Map<String, dynamic>>>((ref) {
   if (userId == null) return const Stream.empty();
 
   final client = Supabase.instance.client;
-  final controller = StreamController<List<Map<String, dynamic>>>();
+  final controller = StreamController<List<Map<String, dynamic>>>.broadcast();
 
   Future<void> fetchAndEmit() async {
     try {
@@ -1342,7 +1423,7 @@ final incomingCallsStreamProvider = StreamProvider<Map<String, dynamic>?>((
   if (userId == null) return const Stream.empty();
 
   final client = Supabase.instance.client;
-  final controller = StreamController<Map<String, dynamic>?>();
+  final controller = StreamController<Map<String, dynamic>?>.broadcast();
 
   Future<void> checkIncoming() async {
     try {
@@ -1420,7 +1501,7 @@ final globalMessagesProvider = StreamProvider<Map<String, dynamic>>((ref) {
   if (userId == null) return const Stream.empty();
 
   final client = Supabase.instance.client;
-  final controller = StreamController<Map<String, dynamic>>();
+  final controller = StreamController<Map<String, dynamic>>.broadcast();
 
   final channelName = 'global-messages-realtime-$userId';
   final channel = client
@@ -1497,7 +1578,7 @@ final declinedRequestsProvider = StreamProvider<List<Map<String, dynamic>>>((
   final chatService = ref.watch(chatServiceProvider);
   final client = Supabase.instance.client;
 
-  final controller = StreamController<List<Map<String, dynamic>>>();
+  final controller = StreamController<List<Map<String, dynamic>>>.broadcast();
 
   Future<void> fetchAndEmit() async {
     try {

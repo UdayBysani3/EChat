@@ -41,6 +41,7 @@ flutter:
   assets:
     - .env
     - assets/images/
+    - assets/sounds/
 
 dependency_overrides:
   record_platform_interface: 1.1.0

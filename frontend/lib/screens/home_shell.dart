@@ -2,6 +2,8 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:flutter_animate/flutter_animate.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:image_picker/image_picker.dart';
 import '../services/supabase_service.dart';
@@ -18,6 +20,8 @@ class HomeShell extends ConsumerStatefulWidget {
 
 class _HomeShellState extends ConsumerState<HomeShell> with WidgetsBindingObserver {
   int _currentIndex = 0;
+  List<Map<String, dynamic>> _unseenMissedCalls = [];
+  bool _showMissedCallsPanel = false;
 
   final List<String> _titles = ['Chats', 'Requests'];
 
@@ -28,6 +32,7 @@ class _HomeShellState extends ConsumerState<HomeShell> with WidgetsBindingObserv
     // Set status to online upon initializing
     WidgetsBinding.instance.addPostFrameCallback((_) {
       ref.read(chatServiceProvider).updateUserStatus('online');
+      _checkMissedCalls();
     });
   }
 
@@ -36,6 +41,11 @@ class _HomeShellState extends ConsumerState<HomeShell> with WidgetsBindingObserv
     WidgetsBinding.instance.removeObserver(this);
     // Attempt setting status to offline upon disposing
     try {
+      final userId = ref.read(supabaseServiceProvider).currentUser?.id;
+      if (userId != null) {
+        final prefs = ref.read(sharedPreferencesProvider);
+        prefs.setString('last_active_time_$userId', DateTime.now().toUtc().toIso8601String());
+      }
       ref.read(chatServiceProvider).updateUserStatus('offline');
     } catch (_) {}
     super.dispose();
@@ -48,7 +58,274 @@ class _HomeShellState extends ConsumerState<HomeShell> with WidgetsBindingObserv
       chatService.updateUserStatus('online');
     } else if (state == AppLifecycleState.paused || state == AppLifecycleState.inactive) {
       chatService.updateUserStatus('offline');
+      final userId = ref.read(supabaseServiceProvider).currentUser?.id;
+      if (userId != null) {
+        final prefs = ref.read(sharedPreferencesProvider);
+        prefs.setString('last_active_time_$userId', DateTime.now().toUtc().toIso8601String());
+      }
     }
+  }
+
+  Future<void> _checkMissedCalls() async {
+    final session = ref.read(supabaseServiceProvider);
+    final userId = session.currentUser?.id;
+    if (userId == null) return;
+
+    try {
+      final response = await Supabase.instance.client
+          .from('call_logs')
+          .select('*, caller:users!caller_id(id, email, username, profile_image)')
+          .eq('receiver_id', userId)
+          .eq('status', 'missed')
+          .order('created_at', ascending: false);
+
+      final missedCalls = List<Map<String, dynamic>>.from(response);
+      if (missedCalls.isEmpty) return;
+
+      // Filter against seen call IDs from SharedPreferences
+      final prefs = ref.read(sharedPreferencesProvider);
+      final seenIds = prefs.getStringList('seen_missed_call_ids') ?? [];
+
+      // Only show missed calls since last active time
+      final lastActiveKey = 'last_active_time_$userId';
+      final lastActiveStr = prefs.getString(lastActiveKey);
+
+      // Store current time for future sessions
+      await prefs.setString(lastActiveKey, DateTime.now().toUtc().toIso8601String());
+
+      final unseen = missedCalls.where((c) {
+        final isUnseen = !seenIds.contains(c['id'] as String);
+        if (!isUnseen) return false;
+
+        if (lastActiveStr != null) {
+          try {
+            final lastActive = DateTime.parse(lastActiveStr);
+            final createdAtStr = c['created_at'] as String?;
+            if (createdAtStr != null) {
+              final createdAt = DateTime.parse(createdAtStr).toUtc();
+              return createdAt.isAfter(lastActive);
+            }
+          } catch (_) {}
+        }
+        return true;
+      }).toList();
+
+      if (unseen.isNotEmpty && mounted) {
+        setState(() {
+          _unseenMissedCalls = unseen;
+          _showMissedCallsPanel = true;
+        });
+      }
+    } catch (e) {
+      debugPrint('[HomeShell] Error checking missed calls: $e');
+    }
+  }
+
+  void _dismissMissedCalls() async {
+    final prefs = ref.read(sharedPreferencesProvider);
+    final seenIds = prefs.getStringList('seen_missed_call_ids') ?? [];
+
+    final currentIds = _unseenMissedCalls.map((c) => c['id'] as String).toList();
+    seenIds.addAll(currentIds);
+    await prefs.setStringList('seen_missed_call_ids', seenIds);
+
+    if (mounted) {
+      setState(() {
+        _showMissedCallsPanel = false;
+      });
+    }
+  }
+
+  String _formatMissedCallTime(String timestampStr) {
+    try {
+      final dateTime = DateTime.parse(timestampStr).toLocal();
+      final now = DateTime.now();
+      final difference = now.difference(dateTime);
+
+      final hourStr = dateTime.hour.toString().padLeft(2, '0');
+      final minuteStr = dateTime.minute.toString().padLeft(2, '0');
+      final timeOfDay = '$hourStr:$minuteStr';
+
+      if (dateTime.year == now.year && dateTime.month == now.month && dateTime.day == now.day) {
+        return 'Today at $timeOfDay';
+      } else if (dateTime.year == now.year &&
+          dateTime.month == now.month &&
+          dateTime.day == now.day - 1) {
+        return 'Yesterday at $timeOfDay';
+      } else if (difference.inDays < 7) {
+        final weekdayNames = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+        final weekday = weekdayNames[dateTime.weekday - 1];
+        return '$weekday at $timeOfDay';
+      } else {
+        return '${dateTime.day}/${dateTime.month} $timeOfDay';
+      }
+    } catch (_) {
+      return '';
+    }
+  }
+
+  Widget _buildMissedCallsFloatingPanel() {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: ObsidianMintColors.surfaceContainerLowest.withValues(alpha: 0.95),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(
+          color: ObsidianMintColors.error.withValues(alpha: 0.3),
+          width: 1.5,
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.3),
+            blurRadius: 24,
+            spreadRadius: 2,
+            offset: const Offset(0, 10),
+          ),
+        ],
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            children: [
+              Icon(
+                Icons.phone_missed_rounded,
+                color: ObsidianMintColors.error,
+                size: 24,
+              ),
+              const SizedBox(width: 10),
+              Text(
+                'Missed Calls',
+                style: TextStyle(
+                  color: ObsidianMintColors.textPrimary,
+                  fontSize: 16,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+              const Spacer(),
+              IconButton(
+                icon: const Icon(Icons.close_rounded, size: 20),
+                color: ObsidianMintColors.textSecondary,
+                onPressed: _dismissMissedCalls,
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          ConstrainedBox(
+            constraints: const BoxConstraints(maxHeight: 180),
+            child: ListView.separated(
+              shrinkWrap: true,
+              itemCount: _unseenMissedCalls.length,
+              separatorBuilder: (context, index) => Divider(
+                color: ObsidianMintColors.outlineVariant.withValues(alpha: 0.5),
+                height: 1,
+              ),
+              itemBuilder: (context, index) {
+                final call = _unseenMissedCalls[index];
+                final caller = call['caller'] as Map<String, dynamic>?;
+                final callerName = caller?['username'] as String? ??
+                    caller?['email'] as String? ??
+                    'Unknown User';
+                final isVideo = call['is_video'] as bool? ?? false;
+                final callTime = call['created_at'] as String? ?? '';
+                final formattedTime = _formatMissedCallTime(callTime);
+                final profileImage = caller?['profile_image'] as String?;
+
+                return Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 8),
+                  child: Row(
+                    children: [
+                      CircleAvatar(
+                        radius: 18,
+                        backgroundColor: ObsidianMintColors.primaryContainer,
+                        backgroundImage: profileImage != null && profileImage.isNotEmpty
+                            ? CachedNetworkImageProvider(profileImage)
+                            : null,
+                        child: profileImage == null || profileImage.isEmpty
+                            ? Text(
+                                callerName.isNotEmpty
+                                    ? callerName.substring(0, 1).toUpperCase()
+                                    : 'U',
+                                style: TextStyle(
+                                  color: ObsidianMintColors.primary,
+                                  fontWeight: FontWeight.bold,
+                                  fontSize: 14,
+                                ),
+                              )
+                            : null,
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              callerName,
+                              style: TextStyle(
+                                color: ObsidianMintColors.textPrimary,
+                                fontSize: 14,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                            const SizedBox(height: 2),
+                            Row(
+                              children: [
+                                Icon(
+                                  isVideo ? Icons.videocam_rounded : Icons.phone_rounded,
+                                  color: ObsidianMintColors.textSecondary,
+                                  size: 12,
+                                ),
+                                const SizedBox(width: 4),
+                                Text(
+                                  isVideo ? 'Missed Video Call' : 'Missed Voice Call',
+                                  style: TextStyle(
+                                    color: ObsidianMintColors.textSecondary,
+                                    fontSize: 12,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ],
+                        ),
+                      ),
+                      Text(
+                        formattedTime,
+                        style: TextStyle(
+                          color: ObsidianMintColors.textSecondary,
+                          fontSize: 11,
+                        ),
+                      ),
+                    ],
+                  ),
+                );
+              },
+            ),
+          ),
+          const SizedBox(height: 12),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: ObsidianMintColors.primary,
+              foregroundColor: ObsidianMintColors.onPrimary,
+              padding: const EdgeInsets.symmetric(vertical: 10),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(10),
+              ),
+            ),
+            onPressed: _dismissMissedCalls,
+            child: const Text('Dismiss'),
+          ),
+        ],
+      ),
+    )
+    .animate()
+    .slideY(
+      begin: -0.2,
+      end: 0,
+      duration: 350.ms,
+      curve: Curves.easeOutBack,
+    )
+    .fade(duration: 250.ms);
   }
 
   void _logout() async {
@@ -94,37 +371,36 @@ class _HomeShellState extends ConsumerState<HomeShell> with WidgetsBindingObserv
       builder: (context) => StatefulBuilder(
         builder: (context, setDialogState) {
           return AlertDialog(
+            scrollable: true,
             backgroundColor: ObsidianMintColors.surface,
             title: Text('New Chat Request', style: TextStyle(color: ObsidianMintColors.textPrimary)),
-            content: SingleChildScrollView(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Text(
+                  'Enter the email address of the person you want to connect with.',
+                  style: TextStyle(color: ObsidianMintColors.textSecondary, fontSize: 13),
+                ),
+                const SizedBox(height: 16),
+                if (dialogError != null) ...[
                   Text(
-                    'Enter the email address of the person you want to connect with.',
-                    style: TextStyle(color: ObsidianMintColors.textSecondary, fontSize: 13),
+                    dialogError!,
+                    style: TextStyle(color: ObsidianMintColors.error, fontSize: 12),
                   ),
-                  const SizedBox(height: 16),
-                  if (dialogError != null) ...[
-                    Text(
-                      dialogError!,
-                      style: TextStyle(color: ObsidianMintColors.error, fontSize: 12),
-                    ),
-                    const SizedBox(height: 8),
-                  ],
-                  TextField(
-                    controller: emailController,
-                    style: TextStyle(color: ObsidianMintColors.textPrimary),
-                    decoration: const InputDecoration(
-                      labelText: 'Email Address',
-                      hintText: 'name@example.com',
-                      prefixIcon: Icon(Icons.email_outlined),
-                    ),
-                    keyboardType: TextInputType.emailAddress,
-                  ),
+                  const SizedBox(height: 8),
                 ],
-              ),
+                TextField(
+                  controller: emailController,
+                  style: TextStyle(color: ObsidianMintColors.textPrimary),
+                  decoration: const InputDecoration(
+                    labelText: 'Email Address',
+                    hintText: 'name@example.com',
+                    prefixIcon: Icon(Icons.email_outlined),
+                  ),
+                  keyboardType: TextInputType.emailAddress,
+                ),
+              ],
             ),
             actions: [
               TextButton(
@@ -717,30 +993,6 @@ class _HomeShellState extends ConsumerState<HomeShell> with WidgetsBindingObserv
               ),
             ),
             ListTile(
-              leading: Icon(Icons.chat_bubble_outline_rounded, color: ObsidianMintColors.textSecondary),
-              title: Text('Chats', style: TextStyle(color: ObsidianMintColors.textPrimary)),
-              onTap: () {
-                Navigator.pop(context);
-                setState(() => _currentIndex = 0);
-              },
-            ),
-            ListTile(
-              leading: Icon(Icons.notifications_none_rounded, color: ObsidianMintColors.textSecondary),
-              title: Text('Requests', style: TextStyle(color: ObsidianMintColors.textPrimary)),
-              trailing: pendingCount > 0
-                  ? Badge(
-                      label: Text(pendingCount.toString()),
-                      backgroundColor: ObsidianMintColors.primary,
-                      textColor: ObsidianMintColors.onPrimary,
-                    )
-                  : null,
-              onTap: () {
-                Navigator.pop(context);
-                setState(() => _currentIndex = 1);
-              },
-            ),
-            Divider(color: ObsidianMintColors.outlineVariant, height: 1),
-            ListTile(
               leading: Icon(Icons.edit_rounded, color: ObsidianMintColors.textSecondary),
               title: Text('Edit Profile', style: TextStyle(color: ObsidianMintColors.textPrimary)),
               onTap: () {
@@ -764,7 +1016,7 @@ class _HomeShellState extends ConsumerState<HomeShell> with WidgetsBindingObserv
                 ref.read(themeModeProvider.notifier).toggleTheme();
               },
             ),
-            const Spacer(),
+            const SizedBox(height: 24),
             ListTile(
               leading: Icon(Icons.logout_rounded, color: ObsidianMintColors.error),
               title: Text('Sign Out', style: TextStyle(color: ObsidianMintColors.error)),
@@ -782,19 +1034,30 @@ class _HomeShellState extends ConsumerState<HomeShell> with WidgetsBindingObserv
           },
         ),
       ),
-      body: IndexedStack(
-        index: _currentIndex,
+      body: Stack(
         children: [
-          _buildChatsTab(),
-          _buildRequestsTab(),
+          IndexedStack(
+            index: _currentIndex,
+            children: [
+              _buildChatsTab(),
+              _buildRequestsTab(),
+            ],
+          ),
+          if (_showMissedCallsPanel && _unseenMissedCalls.isNotEmpty)
+            Positioned(
+              top: 16,
+              left: 16,
+              right: 16,
+              child: _buildMissedCallsFloatingPanel(),
+            ),
         ],
       ),
-      floatingActionButton: (_currentIndex == 0 || _currentIndex == 1)
+      floatingActionButton: (_currentIndex == 1)
           ? FloatingActionButton(
               backgroundColor: ObsidianMintColors.primary,
               foregroundColor: ObsidianMintColors.onPrimary,
               onPressed: _showNewChatDialog,
-              child: Icon(_currentIndex == 0 ? Icons.chat_rounded : Icons.person_add_rounded),
+              child: const Icon(Icons.person_add_rounded),
             )
           : null,
       bottomNavigationBar: BottomNavigationBar(
@@ -867,6 +1130,8 @@ class _HomeShellState extends ConsumerState<HomeShell> with WidgetsBindingObserv
               final lastMsgTime = chat['last_message_time'] != null
                   ? _formatLastMessageTime(chat['last_message_time'] as String)
                   : '';
+              final unreadCount = chat['unread_count'] as int? ?? 0;
+              final hasUnread = unreadCount > 0;
 
               return InkWell(
                 onTap: () {
@@ -937,13 +1202,13 @@ class _HomeShellState extends ConsumerState<HomeShell> with WidgetsBindingObserv
                       ),
                       const SizedBox(width: 16),
                       Expanded(
-                        child: Column(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          crossAxisAlignment: CrossAxisAlignment.start,
+                        child: Row(
                           children: [
-                            Row(
-                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                              children: [
+                            Expanded(
+                              child: Column(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
                                   Text(
                                     name,
                                     style: TextStyle(
@@ -952,24 +1217,58 @@ class _HomeShellState extends ConsumerState<HomeShell> with WidgetsBindingObserv
                                       color: ObsidianMintColors.textPrimary,
                                     ),
                                   ),
+                                  const SizedBox(height: 4),
                                   Text(
-                                    lastMsgTime,
+                                    lastMsg,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
                                     style: TextStyle(
-                                      fontSize: 12,
-                                      color: ObsidianMintColors.textSecondary,
+                                      fontSize: 14,
+                                      fontWeight: hasUnread ? FontWeight.bold : FontWeight.normal,
+                                      color: hasUnread ? ObsidianMintColors.textPrimary : ObsidianMintColors.textSecondary,
                                     ),
                                   ),
-                              ],
-                            ),
-                            const SizedBox(height: 4),
-                            Text(
-                              lastMsg,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: TextStyle(
-                                fontSize: 14,
-                                color: ObsidianMintColors.textSecondary,
+                                ],
                               ),
+                            ),
+                            const SizedBox(width: 8),
+                            Column(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              crossAxisAlignment: CrossAxisAlignment.end,
+                              children: [
+                                Text(
+                                  lastMsgTime,
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    fontWeight: hasUnread ? FontWeight.bold : FontWeight.normal,
+                                    color: hasUnread ? ObsidianMintColors.primary : ObsidianMintColors.textSecondary,
+                                  ),
+                                ),
+                                if (hasUnread) ...[
+                                  const SizedBox(height: 6),
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                    decoration: BoxDecoration(
+                                      color: ObsidianMintColors.primary,
+                                      borderRadius: BorderRadius.circular(10),
+                                    ),
+                                    constraints: const BoxConstraints(
+                                      minWidth: 18,
+                                      minHeight: 18,
+                                    ),
+                                    child: Center(
+                                      child: Text(
+                                        unreadCount.toString(),
+                                        style: const TextStyle(
+                                          color: Colors.white,
+                                          fontSize: 10,
+                                          fontWeight: FontWeight.bold,
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ],
                             ),
                           ],
                         ),

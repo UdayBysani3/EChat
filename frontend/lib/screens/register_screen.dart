@@ -76,18 +76,25 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
   void _showProfileImageSourceSheet() {
     showModalBottomSheet(
       context: context,
+      isScrollControlled: true,
       backgroundColor: ObsidianMintColors.surfaceContainerLowest,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
       ),
       builder: (context) {
         return SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.symmetric(vertical: 24, horizontal: 16),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
+          child: SingleChildScrollView(
+            child: Padding(
+              padding: EdgeInsets.only(
+                left: 16,
+                right: 16,
+                top: 24,
+                bottom: 24 + MediaQuery.of(context).viewInsets.bottom,
+              ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
                 Center(
                   child: Container(
                     width: 36,
@@ -184,9 +191,10 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
               ],
             ),
           ),
-        );
-      },
-    );
+        ),
+      );
+    },
+  );
   }
 
   Widget _buildSourceItem({

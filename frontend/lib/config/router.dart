@@ -67,12 +67,14 @@ final GoRouter appRouter = GoRouter(
         final chatId = state.uri.queryParameters['chatId'] ?? '';
         final isVideo = state.uri.queryParameters['isVideo'] == 'true';
         final callId = state.uri.queryParameters['callId'];
+        final isIncoming = state.uri.queryParameters['isIncoming'] == 'true';
         return CallScreen(
           name: name,
           otherUserId: otherUserId,
           chatId: chatId,
           isVideo: isVideo,
           callId: callId,
+          isIncoming: isIncoming,
         );
       },
     ),

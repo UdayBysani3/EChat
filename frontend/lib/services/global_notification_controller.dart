@@ -25,9 +25,14 @@ class GlobalNotificationController {
     debugPrint('[GlobalNotificationController] Initializing...');
 
     // 1. Listen to incoming calls
-    ref.listen<AsyncValue<List<Map<String, dynamic>>>>(incomingCallsProvider, (previous, next) {
+    ref.listen<AsyncValue<List<Map<String, dynamic>>>>(incomingCallsProvider, (
+      previous,
+      next,
+    ) {
       final calls = next.value ?? [];
-      debugPrint('[GlobalNotificationController] Incoming calls check: count=${calls.length}');
+      debugPrint(
+        '[GlobalNotificationController] Incoming calls check: count=${calls.length}',
+      );
       if (calls.isNotEmpty) {
         _showCallOverlay(calls.first);
       } else {
@@ -36,18 +41,27 @@ class GlobalNotificationController {
     });
 
     // 4. Listen to global messages
-    ref.listen<AsyncValue<Map<String, dynamic>>>(globalMessagesProvider, (previous, next) {
+    ref.listen<AsyncValue<Map<String, dynamic>>>(globalMessagesProvider, (
+      previous,
+      next,
+    ) {
       final message = next.value;
-      debugPrint('[GlobalNotificationController] New global message check: message=$message');
+      debugPrint(
+        '[GlobalNotificationController] New global message check: message=$message',
+      );
       if (message != null) {
         _handleNewIncomingMessage(message);
       }
     });
 
     // 5. Listen to declined requests for popup notifications
-    ref.listen<AsyncValue<List<Map<String, dynamic>>>>(declinedRequestsProvider, (previous, next) {
+    ref.listen<
+      AsyncValue<List<Map<String, dynamic>>>
+    >(declinedRequestsProvider, (previous, next) {
       final declined = next.value ?? [];
-      debugPrint('[GlobalNotificationController] Declined requests check: count=${declined.length}');
+      debugPrint(
+        '[GlobalNotificationController] Declined requests check: count=${declined.length}',
+      );
       if (declined.isNotEmpty) {
         _handleDeclinedRequests(declined);
       }
@@ -55,16 +69,7 @@ class GlobalNotificationController {
   }
 
   void _playRingtone() async {
-    try {
-      _ringtonePlayer ??= AudioPlayer();
-      await _ringtonePlayer!.setReleaseMode(ReleaseMode.loop);
-      await _ringtonePlayer!.play(
-        UrlSource('https://assets.mixkit.co/active_storage/sfx/1359/1359-84.wav'),
-      );
-      debugPrint('[GlobalNotificationController] Ringtone playing...');
-    } catch (e) {
-      debugPrint('[GlobalNotificationController] Ringtone error: $e');
-    }
+    debugPrint('[GlobalNotificationController] Ringtone disabled (silent call display).');
   }
 
   void _stopRingtone() {
@@ -81,7 +86,8 @@ class GlobalNotificationController {
     _playRingtone();
 
     final caller = call['caller'] as Map<String, dynamic>?;
-    final callerName = caller?['username'] as String? ?? caller?['email'] as String? ?? 'User';
+    final callerName =
+        caller?['username'] as String? ?? caller?['email'] as String? ?? 'User';
     final callerProfileImage = caller?['profile_image'] as String?;
     final isVideo = call['is_video'] as bool? ?? false;
     final chatId = call['chat_id'] as String;
@@ -100,99 +106,123 @@ class GlobalNotificationController {
           child: Center(
             child: AlertDialog(
               backgroundColor: ObsidianMintColors.surface,
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(24),
+              ),
               contentPadding: const EdgeInsets.all(24),
-              content: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Stack(
-                    alignment: Alignment.center,
-                    children: [
-                      ...List.generate(3, (index) {
-                        return Container(
-                          width: 90 + (index * 25),
-                          height: 90 + (index * 25),
-                          decoration: BoxDecoration(
-                            shape: BoxShape.circle,
-                            color: ObsidianMintColors.primary.withValues(alpha: 0.1),
-                          ),
-                        ).animate(onPlay: (controller) => controller.repeat())
-                         .scale(
-                           begin: const Offset(0.8, 0.8),
-                           end: const Offset(1.2, 1.2),
-                           duration: 1200.ms,
-                           delay: (index * 300).ms,
-                           curve: Curves.easeInOut,
-                         )
-                         .fadeOut(duration: 1200.ms);
-                      }),
-                      CircleAvatar(
-                        radius: 36,
-                        backgroundColor: ObsidianMintColors.primaryContainer,
-                        backgroundImage: callerProfileImage != null && callerProfileImage.isNotEmpty
-                            ? CachedNetworkImageProvider(callerProfileImage)
-                            : null,
-                        child: callerProfileImage == null || callerProfileImage.isEmpty
-                            ? Text(
-                                callerName.isNotEmpty ? callerName.substring(0, 1).toUpperCase() : 'U',
-                                style: TextStyle(
-                                  fontSize: 28,
-                                  fontWeight: FontWeight.bold,
-                                  color: ObsidianMintColors.primary,
+              content: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Stack(
+                      alignment: Alignment.center,
+                      children: [
+                        ...List.generate(3, (index) {
+                          return Container(
+                                width: 90 + (index * 25),
+                                height: 90 + (index * 25),
+                                decoration: BoxDecoration(
+                                  shape: BoxShape.circle,
+                                  color: ObsidianMintColors.primary.withValues(
+                                    alpha: 0.1,
+                                  ),
                                 ),
                               )
-                            : null,
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 24),
-                  Text(
-                    callerName,
-                    style: TextStyle(
-                      fontSize: 20,
-                      fontWeight: FontWeight.bold,
-                      color: ObsidianMintColors.textPrimary,
+                              .animate(
+                                onPlay: (controller) => controller.repeat(),
+                              )
+                              .scale(
+                                begin: const Offset(0.8, 0.8),
+                                end: const Offset(1.2, 1.2),
+                                duration: 1200.ms,
+                                delay: (index * 300).ms,
+                                curve: Curves.easeInOut,
+                              )
+                              .fadeOut(duration: 1200.ms);
+                        }),
+                        CircleAvatar(
+                          radius: 36,
+                          backgroundColor: ObsidianMintColors.primaryContainer,
+                          backgroundImage:
+                              callerProfileImage != null &&
+                                  callerProfileImage.isNotEmpty
+                              ? CachedNetworkImageProvider(callerProfileImage)
+                              : null,
+                          child:
+                              callerProfileImage == null ||
+                                  callerProfileImage.isEmpty
+                              ? Text(
+                                  callerName.isNotEmpty
+                                      ? callerName.substring(0, 1).toUpperCase()
+                                      : 'U',
+                                  style: TextStyle(
+                                    fontSize: 28,
+                                    fontWeight: FontWeight.bold,
+                                    color: ObsidianMintColors.primary,
+                                  ),
+                                )
+                              : null,
+                        ),
+                      ],
                     ),
-                  ),
-                  const SizedBox(height: 8),
-                  Text(
-                    isVideo ? 'Incoming Video Call...' : 'Incoming Voice Call...',
-                    style: TextStyle(
-                      fontSize: 14,
-                      color: ObsidianMintColors.textSecondary,
+                    const SizedBox(height: 24),
+                    Text(
+                      callerName,
+                      style: TextStyle(
+                        fontSize: 20,
+                        fontWeight: FontWeight.bold,
+                        color: ObsidianMintColors.textPrimary,
+                      ),
                     ),
-                  ),
-                  const SizedBox(height: 32),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                    children: [
-                      FloatingActionButton(
-                        heroTag: 'decline_btn_$callId',
-                        backgroundColor: ObsidianMintColors.error,
-                        foregroundColor: Colors.white,
-                        elevation: 2,
-                        onPressed: () async {
-                          _dismissCall();
-                          await ref.read(chatServiceProvider).updateCallStatus(callId, 'ended');
-                        },
-                        child: const Icon(Icons.call_end_rounded, size: 28),
+                    const SizedBox(height: 8),
+                    Text(
+                      isVideo
+                          ? 'Incoming Video Call...'
+                          : 'Incoming Voice Call...',
+                      style: TextStyle(
+                        fontSize: 14,
+                        color: ObsidianMintColors.textSecondary,
                       ),
-                      FloatingActionButton(
-                        heroTag: 'accept_btn_$callId',
-                        backgroundColor: ObsidianMintColors.primary,
-                        foregroundColor: Colors.white,
-                        elevation: 2,
-                        onPressed: () async {
-                          _dismissCall();
-                          appRouter.push(
-                            '/call?name=${Uri.encodeComponent(callerName)}&otherUserId=${Uri.encodeComponent(caller?['id'] ?? '')}&isVideo=$isVideo&chatId=$chatId&callId=$callId',
-                          );
-                        },
-                        child: Icon(isVideo ? Icons.videocam_rounded : Icons.phone_rounded, size: 28),
-                      ),
-                    ],
-                  ),
-                ],
+                    ),
+                    const SizedBox(height: 32),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                      children: [
+                        FloatingActionButton(
+                          heroTag: 'decline_btn_$callId',
+                          backgroundColor: ObsidianMintColors.error,
+                          foregroundColor: Colors.white,
+                          elevation: 2,
+                          onPressed: () async {
+                            _dismissCall();
+                            await ref
+                                .read(chatServiceProvider)
+                                .updateCallStatus(callId, 'ended');
+                          },
+                          child: const Icon(Icons.call_end_rounded, size: 28),
+                        ),
+                        FloatingActionButton(
+                          heroTag: 'accept_btn_$callId',
+                          backgroundColor: ObsidianMintColors.primary,
+                          foregroundColor: Colors.white,
+                          elevation: 2,
+                          onPressed: () async {
+                            _dismissCall();
+                            appRouter.push(
+                              '/call?name=${Uri.encodeComponent(callerName)}&otherUserId=${Uri.encodeComponent(caller?['id'] ?? '')}&isVideo=$isVideo&chatId=$chatId&callId=$callId&isIncoming=true',
+                            );
+                          },
+                          child: Icon(
+                            isVideo
+                                ? Icons.videocam_rounded
+                                : Icons.phone_rounded,
+                            size: 28,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
               ),
             ),
           ),
@@ -217,8 +247,13 @@ class GlobalNotificationController {
     if (activeChatId == message['chat_id']) return;
 
     try {
-      final senderProfile = await ref.read(chatServiceProvider).getUserProfile(message['sender_id']);
-      final senderName = senderProfile?['username'] as String? ?? senderProfile?['email'] as String? ?? 'User';
+      final senderProfile = await ref
+          .read(chatServiceProvider)
+          .getUserProfile(message['sender_id']);
+      final senderName =
+          senderProfile?['username'] as String? ??
+          senderProfile?['email'] as String? ??
+          'User';
       final senderAvatar = senderProfile?['profile_image'] as String?;
       final content = message['content'] as String? ?? '';
       final type = message['message_type'] as String? ?? 'text';
@@ -275,79 +310,97 @@ class GlobalNotificationController {
                 _messageOverlayTimer?.cancel();
                 _messageOverlayEntry?.remove();
                 _messageOverlayEntry = null;
-                appRouter.push('/chat/$chatId?name=${Uri.encodeComponent(senderName)}&otherUserId=$senderId');
+                appRouter.push(
+                  '/chat/$chatId?name=${Uri.encodeComponent(senderName)}&otherUserId=$senderId',
+                );
               },
-              child: Container(
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: ObsidianMintColors.surfaceContainerLowest.withValues(alpha: 0.95),
-                  borderRadius: BorderRadius.circular(16),
-                  boxShadow: [
-                    BoxShadow(
-                      color: Colors.black.withValues(alpha: 0.15),
-                      blurRadius: 16,
-                      offset: const Offset(0, 8),
-                    ),
-                  ],
-                  border: Border.all(
-                    color: ObsidianMintColors.outlineVariant,
-                    width: 1,
-                  ),
-                ),
-                child: Row(
-                  children: [
-                    CircleAvatar(
-                      radius: 20,
-                      backgroundColor: ObsidianMintColors.primaryContainer,
-                      backgroundImage: senderAvatar != null && senderAvatar.isNotEmpty
-                          ? CachedNetworkImageProvider(senderAvatar)
-                          : null,
-                      child: senderAvatar == null || senderAvatar.isEmpty
-                          ? Text(
-                              senderName.isNotEmpty ? senderName[0].toUpperCase() : 'U',
-                              style: TextStyle(
-                                color: ObsidianMintColors.primary,
-                                fontWeight: FontWeight.bold,
+              child:
+                  Container(
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: ObsidianMintColors.surfaceContainerLowest
+                              .withValues(alpha: 0.95),
+                          borderRadius: BorderRadius.circular(16),
+                          boxShadow: [
+                            BoxShadow(
+                              color: Colors.black.withValues(alpha: 0.15),
+                              blurRadius: 16,
+                              offset: const Offset(0, 8),
+                            ),
+                          ],
+                          border: Border.all(
+                            color: ObsidianMintColors.outlineVariant,
+                            width: 1,
+                          ),
+                        ),
+                        child: Row(
+                          children: [
+                            CircleAvatar(
+                              radius: 20,
+                              backgroundColor:
+                                  ObsidianMintColors.primaryContainer,
+                              backgroundImage:
+                                  senderAvatar != null &&
+                                      senderAvatar.isNotEmpty
+                                  ? CachedNetworkImageProvider(senderAvatar)
+                                  : null,
+                              child:
+                                  senderAvatar == null || senderAvatar.isEmpty
+                                  ? Text(
+                                      senderName.isNotEmpty
+                                          ? senderName[0].toUpperCase()
+                                          : 'U',
+                                      style: TextStyle(
+                                        color: ObsidianMintColors.primary,
+                                        fontWeight: FontWeight.bold,
+                                      ),
+                                    )
+                                  : null,
+                            ),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Text(
+                                    senderName,
+                                    style: TextStyle(
+                                      fontSize: 14,
+                                      fontWeight: FontWeight.bold,
+                                      color: ObsidianMintColors.textPrimary,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 2),
+                                  Text(
+                                    previewText,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: TextStyle(
+                                      fontSize: 13,
+                                      color: ObsidianMintColors.textSecondary,
+                                    ),
+                                  ),
+                                ],
                               ),
-                            )
-                          : null,
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Text(
-                            senderName,
-                            style: TextStyle(
-                              fontSize: 14,
-                              fontWeight: FontWeight.bold,
-                              color: ObsidianMintColors.textPrimary,
                             ),
-                          ),
-                          const SizedBox(height: 2),
-                          Text(
-                            previewText,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: TextStyle(
-                              fontSize: 13,
-                              color: ObsidianMintColors.textSecondary,
+                            const SizedBox(width: 8),
+                            Icon(
+                              Icons.chat_bubble_outline_rounded,
+                              color: ObsidianMintColors.primary,
+                              size: 20,
                             ),
-                          ),
-                        ],
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    Icon(
-                      Icons.chat_bubble_outline_rounded,
-                      color: ObsidianMintColors.primary,
-                      size: 20,
-                    ),
-                  ],
-                ),
-              ).animate().slideY(begin: -0.5, end: 0, duration: 300.ms, curve: Curves.easeOutBack).fade(duration: 250.ms),
+                          ],
+                        ),
+                      )
+                      .animate()
+                      .slideY(
+                        begin: -0.5,
+                        end: 0,
+                        duration: 300.ms,
+                        curve: Curves.easeOutBack,
+                      )
+                      .fade(duration: 250.ms),
             ),
           ),
         );
@@ -369,7 +422,10 @@ class GlobalNotificationController {
     final request = declined.first;
     final requestId = request['id'] as String;
     final receiver = request['receiver'] as Map<String, dynamic>?;
-    final receiverName = receiver?['username'] as String? ?? receiver?['email'] as String? ?? 'User';
+    final receiverName =
+        receiver?['username'] as String? ??
+        receiver?['email'] as String? ??
+        'User';
 
     final context = rootNavigatorKey.currentContext;
     if (context == null) return;
@@ -382,10 +438,15 @@ class GlobalNotificationController {
       builder: (BuildContext dialogContext) {
         return AlertDialog(
           backgroundColor: ObsidianMintColors.surface,
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(20),
+          ),
           title: Row(
             children: [
-              Icon(Icons.info_outline_rounded, color: ObsidianMintColors.primary),
+              Icon(
+                Icons.info_outline_rounded,
+                color: ObsidianMintColors.primary,
+              ),
               const SizedBox(width: 8),
               Text(
                 'Request Status',
@@ -410,7 +471,9 @@ class GlobalNotificationController {
                 Navigator.of(dialogContext).pop();
                 _showingDeclinedDialog = false;
                 try {
-                  await ref.read(chatServiceProvider).markDeclineNotified(requestId);
+                  await ref
+                      .read(chatServiceProvider)
+                      .markDeclineNotified(requestId);
                 } catch (e) {
                   debugPrint('Error marking declined request notified: $e');
                 }
@@ -432,8 +495,9 @@ class GlobalNotificationController {
   }
 }
 
-final globalNotificationControllerProvider = Provider<GlobalNotificationController>((ref) {
-  final controller = GlobalNotificationController(ref);
-  ref.onDispose(() => controller.dispose());
-  return controller;
-});
+final globalNotificationControllerProvider =
+    Provider<GlobalNotificationController>((ref) {
+      final controller = GlobalNotificationController(ref);
+      ref.onDispose(() => controller.dispose());
+      return controller;
+    });

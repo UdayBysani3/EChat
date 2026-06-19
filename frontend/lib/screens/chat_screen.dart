@@ -89,6 +89,98 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     } catch (_) {}
   }
 
+  bool _isCallLogMessage(String content) {
+    final parts = content.split('|');
+    if (parts.length != 3) return false;
+    final status = parts[0];
+    return status == 'initiated' ||
+        status == 'ringing' ||
+        status == 'connected' ||
+        status == 'missed' ||
+        status == 'ended';
+  }
+
+  String _translateCallLogMessage(String content, bool isMe) {
+    final parts = content.split('|');
+    if (parts.length != 3) return content;
+    final status = parts[0];
+    final isVideo = parts[1] == 'true';
+    final duration = int.tryParse(parts[2]) ?? 0;
+
+    if (status == 'initiated') {
+      return isVideo ? 'Outgoing Video Call' : 'Outgoing Voice Call';
+    } else if (status == 'missed') {
+      if (isMe) {
+        return isVideo ? 'Outgoing Video Call' : 'Outgoing Voice Call';
+      } else {
+        return isVideo ? 'Missed Video Call' : 'Missed Voice Call';
+      }
+    } else if (status == 'ended') {
+      if (duration > 0) {
+        final minutes = duration ~/ 60;
+        final seconds = duration % 60;
+        final durationStr = minutes > 0 ? '${minutes}m ${seconds}s' : '${seconds}s';
+        return isVideo ? 'Video Call Ended ($durationStr)' : 'Voice Call Ended ($durationStr)';
+      } else {
+        if (isMe) {
+          return isVideo ? 'Outgoing Video Call' : 'Outgoing Voice Call';
+        } else {
+          return isVideo ? 'Missed Video Call' : 'Missed Voice Call';
+        }
+      }
+    } else {
+      return isVideo ? 'Video Call: $status' : 'Voice Call: $status';
+    }
+  }
+
+  IconData _getCallLogIcon(String content, bool isMe) {
+    final parts = content.split('|');
+    if (parts.length != 3) return Icons.phone;
+    final status = parts[0];
+    final isVideo = parts[1] == 'true';
+    final duration = int.tryParse(parts[2]) ?? 0;
+
+    if (status == 'initiated') {
+      return isVideo ? Icons.videocam_rounded : Icons.phone_rounded;
+    } else if (status == 'missed') {
+      if (isMe) {
+        return Icons.call_made_rounded;
+      } else {
+        return isVideo ? Icons.missed_video_call_rounded : Icons.phone_missed_rounded;
+      }
+    } else if (status == 'ended') {
+      if (duration > 0) {
+        return isVideo ? Icons.videocam_rounded : Icons.phone_rounded;
+      } else {
+        if (isMe) {
+          return Icons.call_made_rounded;
+        } else {
+          return isVideo ? Icons.missed_video_call_rounded : Icons.phone_missed_rounded;
+        }
+      }
+    } else {
+      return isVideo ? Icons.videocam_rounded : Icons.phone_rounded;
+    }
+  }
+
+  Color? _getCallLogIconColor(String content, bool isMe) {
+    final parts = content.split('|');
+    if (parts.length != 3) return null;
+    final status = parts[0];
+    final duration = int.tryParse(parts[2]) ?? 0;
+
+    if (status == 'missed') {
+      if (!isMe) {
+        return ObsidianMintColors.error;
+      }
+    } else if (status == 'ended' && duration == 0) {
+      if (!isMe) {
+        return ObsidianMintColors.error;
+      }
+    }
+    return isMe ? null : ObsidianMintColors.primary;
+  }
+
   @override
   void dispose() {
     ref.read(activeChatIdProvider.notifier).state = null;
@@ -2050,6 +2142,28 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 
       case 'text':
       default:
+        if (_isCallLogMessage(content)) {
+          return Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                _getCallLogIcon(content, isMe),
+                size: 16,
+                color: _getCallLogIconColor(content, isMe) ?? (isMe ? ObsidianMintColors.onPrimary : ObsidianMintColors.primary),
+              ),
+              const SizedBox(width: 6),
+              Text(
+                _translateCallLogMessage(content, isMe),
+                style: TextStyle(
+                  fontSize: 15,
+                  color: isMe
+                      ? ObsidianMintColors.onPrimary
+                      : ObsidianMintColors.textPrimary,
+                ),
+              ),
+            ],
+          );
+        }
         return Text(
           content,
           style: TextStyle(
@@ -2675,14 +2789,21 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                                             otherUserName: displayName,
                                             currentUserId: currentUserId,
                                           ),
-                                        if (messageType == 'text')
+                                        if (messageType == 'text' || messageType == 'call' || _isCallLogMessage(message['content'] ?? ''))
                                           CompactTextMessage(
-                                            content:
-                                                message['content'] as String? ??
-                                                '',
+                                            content: _isCallLogMessage(message['content'] ?? '')
+                                                ? _translateCallLogMessage(message['content'] ?? '', isMe)
+                                                : message['content'] as String? ?? '',
                                             time: time,
                                             isMe: isMe,
                                             status: status,
+                                            isCallLog: _isCallLogMessage(message['content'] ?? ''),
+                                            callIcon: _isCallLogMessage(message['content'] ?? '')
+                                                ? _getCallLogIcon(message['content'] ?? '', isMe)
+                                                : null,
+                                            callIconColor: _isCallLogMessage(message['content'] ?? '')
+                                                ? _getCallLogIconColor(message['content'] ?? '', isMe)
+                                                : null,
                                             textStyle: TextStyle(
                                               fontSize: 15,
                                               color: isMe
@@ -3056,6 +3177,9 @@ class CompactTextMessage extends StatelessWidget {
   final String status;
   final TextStyle textStyle;
   final TextStyle timeStyle;
+  final bool isCallLog;
+  final IconData? callIcon;
+  final Color? callIconColor;
 
   const CompactTextMessage({
     super.key,
@@ -3065,6 +3189,9 @@ class CompactTextMessage extends StatelessWidget {
     required this.status,
     required this.textStyle,
     required this.timeStyle,
+    this.isCallLog = false,
+    this.callIcon,
+    this.callIconColor,
   });
 
   @override
@@ -3079,7 +3206,8 @@ class CompactTextMessage extends StatelessWidget {
           textDirection: TextDirection.ltr,
         )..layout(maxWidth: maxBubbleWidth);
 
-        final double textWidth = textPainter.width;
+        final double callIconPaddingWidth = isCallLog ? 22.0 : 0.0;
+        final double textWidth = textPainter.width + callIconPaddingWidth;
 
         // Measure time + status row size
         final statusIconWidth = isMe ? 15.0 : 0.0;
@@ -3094,11 +3222,44 @@ class CompactTextMessage extends StatelessWidget {
         final lines = textPainter.computeLineMetrics();
         final isSingleLine = lines.length <= 1;
 
+        Widget buildText() {
+          if (isCallLog && callIcon != null) {
+            return Text.rich(
+              TextSpan(
+                children: [
+                  WidgetSpan(
+                    alignment: PlaceholderAlignment.middle,
+                    child: Padding(
+                      padding: const EdgeInsets.only(right: 6),
+                      child: Icon(
+                        callIcon,
+                        size: 16,
+                        color: callIconColor ?? (isMe ? ObsidianMintColors.onPrimary : ObsidianMintColors.primary),
+                      ),
+                    ),
+                  ),
+                  TextSpan(text: content, style: textStyle),
+                ],
+              ),
+            );
+          } else {
+            return Text(content, style: textStyle);
+          }
+        }
+
         if (isSingleLine && (textWidth + timeWidth < maxBubbleWidth)) {
           return Row(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.end,
             children: [
+              if (isCallLog && callIcon != null) ...[
+                Icon(
+                  callIcon,
+                  size: 16,
+                  color: callIconColor ?? (isMe ? ObsidianMintColors.onPrimary : ObsidianMintColors.primary),
+                ),
+                const SizedBox(width: 6),
+              ],
               Flexible(child: Text(content, style: textStyle)),
               const SizedBox(width: 8),
               _buildTimeRow(),
@@ -3113,7 +3274,7 @@ class CompactTextMessage extends StatelessWidget {
           if (lastLineRemainingWidth > timeWidth + 8.0) {
             return Stack(
               children: [
-                Text(content, style: textStyle),
+                buildText(),
                 Positioned(bottom: 0, right: 0, child: _buildTimeRow()),
               ],
             );
@@ -3125,7 +3286,7 @@ class CompactTextMessage extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           mainAxisSize: MainAxisSize.min,
           children: [
-            Text(content, style: textStyle),
+            buildText(),
             const SizedBox(height: 2),
             Align(alignment: Alignment.bottomRight, child: _buildTimeRow()),
           ],

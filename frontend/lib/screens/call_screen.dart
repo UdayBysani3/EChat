@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -11,6 +12,7 @@ class CallScreen extends StatefulWidget {
   final String chatId;
   final bool isVideo;
   final String? callId;
+  final bool isIncoming;
 
   const CallScreen({
     super.key,
@@ -19,6 +21,7 @@ class CallScreen extends StatefulWidget {
     required this.chatId,
     required this.isVideo,
     this.callId,
+    this.isIncoming = false,
   });
 
   @override
@@ -29,39 +32,134 @@ class _CallScreenState extends State<CallScreen> {
   String? _localUserId;
   String? _localUserName;
   bool _isZegoInitialized = false;
+  RealtimeChannel? _callStatusChannel;
+  bool _isConnected = false;
+  bool _isNotAnswering = false;
+  Timer? _ringTimeoutTimer;
 
   @override
   void initState() {
     super.initState();
     _initZego();
     _connectCall();
+    _listenToCallStatus();
+    if (!widget.isIncoming) {
+      _ringTimeoutTimer = Timer(const Duration(seconds: 15), () {
+        _handleRingTimeout();
+      });
+    }
   }
 
   @override
   void dispose() {
+    _ringTimeoutTimer?.cancel();
     _disconnectCall();
+    if (_callStatusChannel != null) {
+      Supabase.instance.client.removeChannel(_callStatusChannel!);
+    }
     super.dispose();
+  }
+
+  void _handleRingTimeout() async {
+    if (!mounted) return;
+    if (_isConnected) return;
+
+    debugPrint('[CallScreen] Call ring timeout reached (15s). Marking as missed.');
+    if (widget.callId != null) {
+      try {
+        await Supabase.instance.client
+            .from('call_logs')
+            .update({'status': 'missed'})
+            .eq('id', widget.callId!);
+      } catch (e) {
+        debugPrint('[CallScreen] Error updating call status to missed: $e');
+      }
+    }
+
+    if (mounted) {
+      setState(() {
+        _isNotAnswering = true;
+      });
+    }
+  }
+
+  void _listenToCallStatus() {
+    if (widget.callId != null) {
+      _callStatusChannel = Supabase.instance.client
+          .channel('call-status-${widget.callId}')
+          .onPostgresChanges(
+            event: PostgresChangeEvent.update,
+            schema: 'public',
+            table: 'call_logs',
+            filter: PostgresChangeFilter(
+              type: PostgresChangeFilterType.eq,
+              column: 'id',
+              value: widget.callId,
+            ),
+            callback: (payload) {
+              final newStatus = payload.newRecord['status'] as String?;
+              debugPrint('[CallScreen] Call status changed to: $newStatus');
+              if (newStatus == 'connected') {
+                _isConnected = true;
+                _ringTimeoutTimer?.cancel();
+              } else if (newStatus == 'ended' || newStatus == 'missed') {
+                if (mounted) {
+                  if (newStatus == 'missed' && !widget.isIncoming) {
+                    setState(() {
+                      _isNotAnswering = true;
+                    });
+                  } else {
+                    context.pop();
+                  }
+                }
+              }
+            },
+          );
+      _callStatusChannel!.subscribe();
+    }
   }
 
   void _connectCall() {
     if (widget.callId != null) {
+      final newStatus = widget.isIncoming ? 'connected' : 'ringing';
       Supabase.instance.client
           .from('call_logs')
-          .update({'status': 'connected'})
+          .update({'status': newStatus})
           .eq('id', widget.callId!)
           .then((_) {})
           .catchError((_) {});
     }
   }
 
+  bool _isDisconnected = false;
+
   void _disconnectCall() {
-    if (widget.callId != null) {
+    if (_isDisconnected) return;
+    _isDisconnected = true;
+    if (widget.callId != null && !_isNotAnswering) {
       Supabase.instance.client
           .from('call_logs')
           .update({'status': 'ended'})
           .eq('id', widget.callId!)
           .then((_) {})
           .catchError((_) {});
+    }
+  }
+
+  Future<void> _updateCallStatusToEnded() async {
+    if (_isDisconnected) return;
+    _isDisconnected = true;
+    if (widget.callId != null && !_isNotAnswering) {
+      try {
+        debugPrint('[CallScreen] Updating call status to ended.');
+        await Supabase.instance.client
+            .from('call_logs')
+            .update({'status': 'ended'})
+            .eq('id', widget.callId!);
+        debugPrint('[CallScreen] Call status updated to ended successfully.');
+      } catch (e) {
+        debugPrint('[CallScreen] Error updating call status to ended: $e');
+      }
     }
   }
 
@@ -103,6 +201,48 @@ class _CallScreenState extends State<CallScreen> {
 
   @override
   Widget build(BuildContext context) {
+    if (_isNotAnswering) {
+      return Scaffold(
+        backgroundColor: ObsidianMintColors.background,
+        body: Center(
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(
+                Icons.phone_missed_rounded,
+                color: ObsidianMintColors.error,
+                size: 64,
+              ),
+              const SizedBox(height: 24),
+              Text(
+                'The user is not answering',
+                style: TextStyle(
+                  color: ObsidianMintColors.textPrimary,
+                  fontSize: 20,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+              const SizedBox(height: 32),
+              ElevatedButton(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: ObsidianMintColors.primary,
+                  foregroundColor: ObsidianMintColors.onPrimary,
+                  padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                ),
+                onPressed: () {
+                  context.pop();
+                },
+                child: const Text('Close'),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
     if (!_isZegoInitialized) {
       return Scaffold(
         backgroundColor: Colors.black,
@@ -125,6 +265,12 @@ class _CallScreenState extends State<CallScreen> {
           config: widget.isVideo
               ? ZegoUIKitPrebuiltCallConfig.oneOnOneVideoCall()
               : ZegoUIKitPrebuiltCallConfig.oneOnOneVoiceCall(),
+          events: ZegoUIKitPrebuiltCallEvents(
+            onCallEnd: (ZegoCallEndEvent event, VoidCallback defaultAction) async {
+              await _updateCallStatusToEnded();
+              defaultAction();
+            },
+          ),
         ),
       ),
     );
